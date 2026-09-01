@@ -1,0 +1,3 @@
+export const OFFICIAL_LOGO_URL = "/logo.png";
+
+export const OFFICIAL_LOGO_FALLBACK = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200' width='200' height='200'><rect width='200' height='200' fill='%230A2E73' rx='20'/><circle cx='100' cy='100' r='70' fill='none' stroke='%232EA3F2' stroke-width='8'/><path d='M90 50 L115 90 L85 100 L110 150' fill='none' stroke='%232EA3F2' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/><text x='100' y='175' font-family='Arial, sans-serif' font-size='14' font-weight='bold' fill='%23FFFFFF' text-anchor='middle'>N-NEPEF 2020</text></svg>";

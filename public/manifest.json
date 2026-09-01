@@ -1,0 +1,30 @@
+{
+  "name": "N-NEPEF 2020 Portal",
+  "short_name": "N-NEPEF",
+  "description": "Northern Nigerian Electrical Practitioners & Engineers Forum Official Digital Portal",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0A2E73",
+  "theme_color": "#0A2E73",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
