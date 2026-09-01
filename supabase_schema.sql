@@ -1,69 +1,78 @@
 -- ============================================================================
--- N-NEPEF 2020 DIGITAL PORTAL - OFFICIAL SUPABASE POSTGRESQL SCHEMA
+-- N-NEPEF 2020 DIGITAL PORTAL - OFFICIAL HARDENED PRODUCTION DATABASE SCHEMA
 -- Northern Nigerian Electrical Practitioners and Engineers Forum
 -- ============================================================================
 
--- Enable UUID extension
+-- 1. EXTENSIONS
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- ============================================================================
--- 1. HELPER FUNCTIONS & ENUMS
+-- 2. SECURE AUTHORIZATION HELPER FUNCTIONS
 -- ============================================================================
 
--- Helper function to check if current authenticated user is an Admin
-CREATE OR REPLACE FUNCTION auth.is_admin()
-RETURNS BOOLEAN 
-LANGUAGE plpgsql 
-SECURITY DEFINER 
-SET search_path = public
+CREATE OR REPLACE FUNCTION public.is_admin()
+RETURNS BOOLEAN
+LANGUAGE sql
+SECURITY DEFINER
+STABLE
+SET search_path = public, pg_temp
 AS $$
-BEGIN
-  RETURN (
-    coalesce(auth.jwt()->>'role', '') IN ('admin', 'super_admin', 'Admin', 'Super Admin')
+  SELECT (
+    -- Service role bypass for serverless API handlers
+    auth.role() = 'service_role'
+    -- Trusted Supabase app_metadata claims
+    OR (auth.jwt()->'app_metadata'->>'role') IN ('super_admin', 'national_admin', 'state_admin', 'lga_admin', 'treasurer', 'secretary', 'admin')
+    OR (auth.jwt()->>'role') IN ('super_admin', 'national_admin', 'state_admin', 'lga_admin', 'treasurer', 'secretary', 'admin')
+    -- Active administrative personnel account verification
     OR EXISTS (
       SELECT 1 FROM public.admin_accounts 
-      WHERE email = auth.jwt()->>'email' 
-      AND status = 'active'
+      WHERE (user_id = auth.uid() OR email = auth.jwt()->>'email') 
+      AND LOWER(status) = 'active'
+    )
+    -- Active administrative member profile verification
+    OR EXISTS (
+      SELECT 1 FROM public.members 
+      WHERE (user_id = auth.uid() OR id = auth.uid()::text) 
+      AND LOWER(role) IN ('admin', 'super_admin', 'super admin', 'administrator')
+      AND LOWER(status) IN ('approved', 'active')
+    )
+  );
+$$;
+
+CREATE OR REPLACE FUNCTION public.is_super_admin()
+RETURNS BOOLEAN
+LANGUAGE sql
+SECURITY DEFINER
+STABLE
+SET search_path = public, pg_temp
+AS $$
+  SELECT (
+    auth.role() = 'service_role'
+    OR (auth.jwt()->'app_metadata'->>'role') IN ('super_admin', 'super admin')
+    OR (auth.jwt()->>'role') IN ('super_admin', 'super admin')
+    OR EXISTS (
+      SELECT 1 FROM public.admin_accounts 
+      WHERE (user_id = auth.uid() OR email = auth.jwt()->>'email') 
+      AND LOWER(role) IN ('super_admin', 'super admin')
+      AND LOWER(status) = 'active'
     )
     OR EXISTS (
       SELECT 1 FROM public.members 
-      WHERE (id = auth.uid()::text OR user_id = auth.uid())
-      AND role IN ('Admin', 'Super Admin', 'admin', 'super_admin')
+      WHERE (user_id = auth.uid() OR id = auth.uid()::text) 
+      AND LOWER(role) IN ('super_admin', 'super admin')
+      AND LOWER(status) IN ('approved', 'active')
     )
   );
-END;
 $$;
 
--- Helper function to check if current authenticated user is Super Admin
-CREATE OR REPLACE FUNCTION auth.is_super_admin()
-RETURNS BOOLEAN 
-LANGUAGE plpgsql 
-SECURITY DEFINER 
-SET search_path = public
-AS $$
-BEGIN
-  RETURN (
-    coalesce(auth.jwt()->>'role', '') IN ('super_admin', 'Super Admin')
-    OR EXISTS (
-      SELECT 1 FROM public.admin_accounts 
-      WHERE email = auth.jwt()->>'email' 
-      AND role IN ('super_admin', 'Super Admin')
-      AND status = 'active'
-    )
-    OR EXISTS (
-      SELECT 1 FROM public.members 
-      WHERE (id = auth.uid()::text OR user_id = auth.uid())
-      AND role IN ('Super Admin', 'super_admin')
-    )
-  );
-END;
-$$;
+GRANT EXECUTE ON FUNCTION public.is_admin() TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.is_super_admin() TO anon, authenticated, service_role;
 
 -- ============================================================================
--- 2. TABLE DEFINITIONS
+-- 3. CORE TABLE DEFINITIONS & INDEXES
 -- ============================================================================
 
--- 2.1 FORUM SETTINGS
+-- 3.1 FORUM SETTINGS
 CREATE TABLE IF NOT EXISTS public.forum_settings (
   id TEXT PRIMARY KEY DEFAULT 'primary_settings',
   forum_name TEXT NOT NULL DEFAULT 'N-NEPEF 2020',
@@ -95,7 +104,7 @@ CREATE TABLE IF NOT EXISTS public.forum_settings (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2.2 BANK ACCOUNTS
+-- 3.2 BANK ACCOUNTS
 CREATE TABLE IF NOT EXISTS public.bank_accounts (
   id TEXT PRIMARY KEY,
   bank_name TEXT NOT NULL,
@@ -109,7 +118,7 @@ CREATE TABLE IF NOT EXISTS public.bank_accounts (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2.3 FEE CATEGORIES
+-- 3.3 FEE CATEGORIES
 CREATE TABLE IF NOT EXISTS public.fee_categories (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -123,12 +132,13 @@ CREATE TABLE IF NOT EXISTS public.fee_categories (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2.4 MEMBERS TABLE (Primary User & Profiles Store)
+-- 3.4 MEMBERS TABLE (Primary User & Applicant Records)
 CREATE TABLE IF NOT EXISTS public.members (
   id TEXT PRIMARY KEY,
   user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
   membership_id TEXT,
   application_reference TEXT,
+  verification_code TEXT,
   full_name TEXT NOT NULL,
   gender TEXT,
   dob TEXT,
@@ -173,11 +183,12 @@ CREATE INDEX IF NOT EXISTS idx_members_membership_id ON public.members(membershi
 CREATE INDEX IF NOT EXISTS idx_members_status ON public.members(status);
 CREATE INDEX IF NOT EXISTS idx_members_state ON public.members(state);
 CREATE INDEX IF NOT EXISTS idx_members_user_id ON public.members(user_id);
+CREATE INDEX IF NOT EXISTS idx_members_app_ref ON public.members(application_reference);
 
--- 2.5 PAYMENTS / PAYMENT RECORDS
+-- 3.5 PAYMENT RECORDS
 CREATE TABLE IF NOT EXISTS public.payment_records (
   id TEXT PRIMARY KEY,
-  member_id TEXT,
+  member_id TEXT REFERENCES public.members(id) ON DELETE SET NULL,
   member_name TEXT,
   membership_id TEXT,
   state TEXT,
@@ -201,7 +212,7 @@ CREATE INDEX IF NOT EXISTS idx_payments_member_id ON public.payment_records(memb
 CREATE INDEX IF NOT EXISTS idx_payments_reference ON public.payment_records(reference);
 CREATE INDEX IF NOT EXISTS idx_payments_status ON public.payment_records(status);
 
--- 2.6 ADMIN ACCOUNTS
+-- 3.6 ADMIN ACCOUNTS
 CREATE TABLE IF NOT EXISTS public.admin_accounts (
   id TEXT PRIMARY KEY,
   user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
@@ -219,7 +230,10 @@ CREATE TABLE IF NOT EXISTS public.admin_accounts (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2.7 EXECUTIVES
+CREATE INDEX IF NOT EXISTS idx_admin_accounts_email ON public.admin_accounts(email);
+CREATE INDEX IF NOT EXISTS idx_admin_accounts_user_id ON public.admin_accounts(user_id);
+
+-- 3.7 EXECUTIVES
 CREATE TABLE IF NOT EXISTS public.executives (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -239,7 +253,7 @@ CREATE TABLE IF NOT EXISTS public.executives (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2.8 ANNOUNCEMENTS
+-- 3.8 ANNOUNCEMENTS
 CREATE TABLE IF NOT EXISTS public.announcements (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
@@ -254,7 +268,7 @@ CREATE TABLE IF NOT EXISTS public.announcements (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2.9 NEWS ARTICLES
+-- 3.9 NEWS ARTICLES
 CREATE TABLE IF NOT EXISTS public.news_articles (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
@@ -272,7 +286,7 @@ CREATE TABLE IF NOT EXISTS public.news_articles (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2.10 EVENTS
+-- 3.10 EVENTS
 CREATE TABLE IF NOT EXISTS public.events (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
@@ -294,7 +308,7 @@ CREATE TABLE IF NOT EXISTS public.events (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2.11 DOCUMENTS
+-- 3.11 DOCUMENTS
 CREATE TABLE IF NOT EXISTS public.documents (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
@@ -309,7 +323,7 @@ CREATE TABLE IF NOT EXISTS public.documents (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2.12 GALLERY ALBUMS
+-- 3.12 GALLERY ALBUMS
 CREATE TABLE IF NOT EXISTS public.gallery_albums (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
@@ -323,7 +337,7 @@ CREATE TABLE IF NOT EXISTS public.gallery_albums (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2.13 CONTACT MESSAGES
+-- 3.13 CONTACT MESSAGES
 CREATE TABLE IF NOT EXISTS public.contact_messages (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -338,10 +352,10 @@ CREATE TABLE IF NOT EXISTS public.contact_messages (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2.14 RENEWAL REQUESTS
+-- 3.14 RENEWAL REQUESTS
 CREATE TABLE IF NOT EXISTS public.renewal_requests (
   id TEXT PRIMARY KEY,
-  member_id TEXT NOT NULL,
+  member_id TEXT NOT NULL REFERENCES public.members(id) ON DELETE CASCADE,
   full_name TEXT NOT NULL,
   membership_id TEXT NOT NULL,
   position TEXT,
@@ -362,7 +376,7 @@ CREATE TABLE IF NOT EXISTS public.renewal_requests (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2.15 AUDIT LOGS
+-- 3.15 AUDIT LOGS
 CREATE TABLE IF NOT EXISTS public.audit_logs (
   id TEXT PRIMARY KEY,
   timestamp TIMESTAMPTZ DEFAULT NOW(),
@@ -375,7 +389,9 @@ CREATE TABLE IF NOT EXISTS public.audit_logs (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2.16 NOTIFICATIONS
+CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON public.audit_logs(timestamp DESC);
+
+-- 3.16 NOTIFICATIONS
 CREATE TABLE IF NOT EXISTS public.notifications (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
@@ -386,7 +402,7 @@ CREATE TABLE IF NOT EXISTS public.notifications (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2.17 NOTIFICATION DELIVERY LOGS
+-- 3.17 NOTIFICATION DELIVERY LOGS
 CREATE TABLE IF NOT EXISTS public.notification_delivery_logs (
   id TEXT PRIMARY KEY,
   timestamp TIMESTAMPTZ DEFAULT NOW(),
@@ -403,7 +419,7 @@ CREATE TABLE IF NOT EXISTS public.notification_delivery_logs (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2.18 CMS FILES
+-- 3.18 CMS FILES
 CREATE TABLE IF NOT EXISTS public.cms_files (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -416,17 +432,23 @@ CREATE TABLE IF NOT EXISTS public.cms_files (
 );
 
 -- ============================================================================
--- 3. PUBLIC VERIFIED MEMBERS VIEW (Strict Data Privacy)
+-- 4. SECURE PUBLIC VERIFICATION VIEW (Shields Sensitive PII)
 -- ============================================================================
-CREATE OR REPLACE VIEW public.public_verified_members AS
+
+CREATE OR REPLACE VIEW public.public_verified_members
+WITH (security_invoker = true)
+AS
 SELECT 
   id,
   membership_id,
+  verification_code,
+  application_reference,
   full_name,
   state,
   lga,
   occupation,
   specialization,
+  qualification,
   company,
   status,
   position,
@@ -437,13 +459,12 @@ SELECT
   registered_at,
   approved_at
 FROM public.members
-WHERE LOWER(status) IN ('approved', 'active');
+WHERE LOWER(TRIM(status)) IN ('approved', 'active');
 
 -- ============================================================================
--- 4. ROW LEVEL SECURITY (RLS) POLICIES
+-- 5. ROW LEVEL SECURITY (RLS) POLICIES
 -- ============================================================================
 
--- Enable RLS on all tables
 ALTER TABLE public.forum_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.bank_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.fee_categories ENABLE ROW LEVEL SECURITY;
@@ -463,59 +484,31 @@ ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notification_delivery_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.cms_files ENABLE ROW LEVEL SECURITY;
 
--- ----------------------------------------------------------------------------
--- 0. CENTRALIZED SERVER-AUTHORITATIVE IS_ADMIN FUNCTION
--- Uses app_metadata.role, trusted JWT claims, verified admin emails, or service_role.
--- Never trusts client-controlled user_metadata.
--- ----------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION public.is_admin()
-RETURNS BOOLEAN
-LANGUAGE sql
-SECURITY DEFINER
-STABLE
-SET search_path = public, pg_temp
-AS $$
-  SELECT (
-    auth.role() = 'service_role'
-    OR (auth.jwt()->'app_metadata'->>'role') IN ('super_admin', 'national_admin', 'state_admin', 'lga_admin', 'treasurer', 'secretary', 'admin')
-    OR (auth.jwt()->>'role') IN ('super_admin', 'national_admin', 'state_admin', 'lga_admin', 'treasurer', 'secretary', 'admin')
-    OR (auth.jwt()->>'email') IN ('nnepef@gmail.com', 'superadmin@nepef.org.ng', 'admin@nepef.org.ng', 'ahmadhussainiali2020@gmail.com')
-  );
-$$;
-
-GRANT EXECUTE ON FUNCTION public.is_admin() TO anon, authenticated, service_role;
-
--- 4.1 FORUM SETTINGS POLICIES
+-- 5.1 FORUM SETTINGS
+DROP POLICY IF EXISTS "Public Read Forum Settings" ON public.forum_settings;
+DROP POLICY IF EXISTS "Admin All Forum Settings" ON public.forum_settings;
 CREATE POLICY "Public Read Forum Settings" ON public.forum_settings FOR SELECT USING (true);
-CREATE POLICY "Admin All Forum Settings" ON public.forum_settings FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
+CREATE POLICY "Admin All Forum Settings" ON public.forum_settings FOR ALL TO authenticated, service_role USING (public.is_admin()) WITH CHECK (public.is_admin());
 
--- 4.2 BANK ACCOUNTS & FEES
+-- 5.2 BANK ACCOUNTS & FEES
+DROP POLICY IF EXISTS "Public Read Bank Accounts" ON public.bank_accounts;
+DROP POLICY IF EXISTS "Admin All Bank Accounts" ON public.bank_accounts;
 CREATE POLICY "Public Read Bank Accounts" ON public.bank_accounts FOR SELECT USING (true);
-CREATE POLICY "Admin All Bank Accounts" ON public.bank_accounts FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
+CREATE POLICY "Admin All Bank Accounts" ON public.bank_accounts FOR ALL TO authenticated, service_role USING (public.is_admin()) WITH CHECK (public.is_admin());
 
+DROP POLICY IF EXISTS "Public Read Fees" ON public.fee_categories;
+DROP POLICY IF EXISTS "Admin All Fees" ON public.fee_categories;
 CREATE POLICY "Public Read Fees" ON public.fee_categories FOR SELECT USING (true);
-CREATE POLICY "Admin All Fees" ON public.fee_categories FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
+CREATE POLICY "Admin All Fees" ON public.fee_categories FOR ALL TO authenticated, service_role USING (public.is_admin()) WITH CHECK (public.is_admin());
 
--- 4.3 MEMBERS POLICIES (Strict Privacy & Security)
-ALTER TABLE public.members ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS "Public Verification Read Members" ON public.members;
-DROP POLICY IF EXISTS "Allow read members" ON public.members;
-DROP POLICY IF EXISTS "Members Select Policy" ON public.members;
-DROP POLICY IF EXISTS "Public Read Members" ON public.members;
-DROP POLICY IF EXISTS "Public Insert Member Registration" ON public.members;
-DROP POLICY IF EXISTS "Member & Admin Update Profile" ON public.members;
-DROP POLICY IF EXISTS "Admin Delete Members" ON public.members;
-DROP POLICY IF EXISTS "Allow insert members" ON public.members;
-DROP POLICY IF EXISTS "Allow update members" ON public.members;
-DROP POLICY IF EXISTS "Allow delete members" ON public.members;
-DROP POLICY IF EXISTS "Public Verification Approved Only" ON public.members;
-DROP POLICY IF EXISTS "Admin Full Access Members" ON public.members;
-DROP POLICY IF EXISTS "Allow public insert member registration" ON public.members;
-DROP POLICY IF EXISTS "Allow read all members" ON public.members;
+-- 5.3 MEMBERS TABLE (Strict Privacy & Access Control)
 DROP POLICY IF EXISTS "Public Applicant Insert Only" ON public.members;
+DROP POLICY IF EXISTS "Public Verification Approved Only" ON public.members;
+DROP POLICY IF EXISTS "Member Read Own Profile" ON public.members;
+DROP POLICY IF EXISTS "Member Update Own Profile" ON public.members;
+DROP POLICY IF EXISTS "Admin Full Access Members" ON public.members;
 
--- 4.3.1 PUBLIC REGISTRATION: Allow applicant to INSERT pending registration only
+-- 1. Unauthenticated / New Applicants: Insert only with status='pending'
 CREATE POLICY "Public Applicant Insert Only" 
   ON public.members FOR INSERT 
   TO anon, authenticated
@@ -527,29 +520,37 @@ CREATE POLICY "Public Applicant Insert Only"
     AND (rejected_by IS NULL)
   );
 
--- 4.3.2 PUBLIC VERIFICATION: Public users can ONLY SELECT approved or active members
+-- 2. Public Verification: Select only approved/active members
 CREATE POLICY "Public Verification Approved Only" 
   ON public.members FOR SELECT 
   TO anon, authenticated
   USING (LOWER(TRIM(status)) IN ('approved', 'active'));
 
--- 4.3.3 ADMIN FULL ACCESS: Authenticated admins & service_role have full CRUD across all member records
+-- 3. Authenticated Members: Read own full profile
+CREATE POLICY "Member Read Own Profile"
+  ON public.members FOR SELECT
+  TO authenticated
+  USING (auth.uid() IS NOT NULL AND (user_id = auth.uid() OR id = auth.uid()::text));
+
+-- 4. Authenticated Members: Update non-status profile fields
+CREATE POLICY "Member Update Own Profile"
+  ON public.members FOR UPDATE
+  TO authenticated
+  USING (auth.uid() IS NOT NULL AND (user_id = auth.uid() OR id = auth.uid()::text))
+  WITH CHECK (
+    auth.uid() IS NOT NULL AND (user_id = auth.uid() OR id = auth.uid()::text)
+    AND status = (SELECT m.status FROM public.members m WHERE m.id = public.members.id)
+    AND role = (SELECT m.role FROM public.members m WHERE m.id = public.members.id)
+  );
+
+-- 5. Administrators: Full management privileges
 CREATE POLICY "Admin Full Access Members" 
   ON public.members FOR ALL 
   TO authenticated, service_role
   USING (public.is_admin())
   WITH CHECK (public.is_admin());
 
--- 4.4 PAYMENT RECORDS POLICIES
-ALTER TABLE public.payment_records ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Public Insert Payment" ON public.payment_records;
-DROP POLICY IF EXISTS "Public Read Payments" ON public.payment_records;
-DROP POLICY IF EXISTS "Admin Update Payments" ON public.payment_records;
-DROP POLICY IF EXISTS "Admin Delete Payments" ON public.payment_records;
-DROP POLICY IF EXISTS "Allow public insert payment" ON public.payment_records;
-DROP POLICY IF EXISTS "Allow read all payment records" ON public.payment_records;
-DROP POLICY IF EXISTS "Allow update payment records" ON public.payment_records;
-DROP POLICY IF EXISTS "Allow delete payment records" ON public.payment_records;
+-- 5.4 PAYMENT RECORDS
 DROP POLICY IF EXISTS "Public Applicant Insert Payment" ON public.payment_records;
 DROP POLICY IF EXISTS "Admin & Owner Read Payments" ON public.payment_records;
 DROP POLICY IF EXISTS "Admin Full Access Payments" ON public.payment_records;
@@ -568,7 +569,7 @@ CREATE POLICY "Admin & Owner Read Payments"
   TO authenticated, service_role
   USING (
     public.is_admin()
-    OR (auth.uid() IS NOT NULL AND auth.uid()::text = member_id)
+    OR (auth.uid() IS NOT NULL AND (member_id = auth.uid()::text OR member_id IN (SELECT id FROM public.members WHERE user_id = auth.uid())))
   );
 
 CREATE POLICY "Admin Full Access Payments" 
@@ -577,126 +578,91 @@ CREATE POLICY "Admin Full Access Payments"
   USING (public.is_admin())
   WITH CHECK (public.is_admin());
 
--- 4.5 PUBLIC READ-ALL FOR PORTAL CONTENT
+-- 5.5 ADMIN ACCOUNTS
+DROP POLICY IF EXISTS "Admin Read Admin Accounts" ON public.admin_accounts;
+DROP POLICY IF EXISTS "Super Admin Manage Admin Accounts" ON public.admin_accounts;
+
+CREATE POLICY "Admin Read Admin Accounts"
+  ON public.admin_accounts FOR SELECT
+  TO authenticated, service_role
+  USING (public.is_admin());
+
+CREATE POLICY "Super Admin Manage Admin Accounts"
+  ON public.admin_accounts FOR ALL
+  TO authenticated, service_role
+  USING (public.is_super_admin())
+  WITH CHECK (public.is_super_admin());
+
+-- 5.6 PUBLIC CONTENT (Executives, Announcements, News, Events, Documents, Gallery)
+DROP POLICY IF EXISTS "Public Read Executives" ON public.executives;
+DROP POLICY IF EXISTS "Admin Manage Executives" ON public.executives;
 CREATE POLICY "Public Read Executives" ON public.executives FOR SELECT USING (true);
-CREATE POLICY "Admin All Executives" ON public.executives FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admin Manage Executives" ON public.executives FOR ALL TO authenticated, service_role USING (public.is_admin()) WITH CHECK (public.is_admin());
 
+DROP POLICY IF EXISTS "Public Read Announcements" ON public.announcements;
+DROP POLICY IF EXISTS "Admin Manage Announcements" ON public.announcements;
 CREATE POLICY "Public Read Announcements" ON public.announcements FOR SELECT USING (true);
-CREATE POLICY "Admin All Announcements" ON public.announcements FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admin Manage Announcements" ON public.announcements FOR ALL TO authenticated, service_role USING (public.is_admin()) WITH CHECK (public.is_admin());
 
+DROP POLICY IF EXISTS "Public Read News" ON public.news_articles;
+DROP POLICY IF EXISTS "Admin Manage News" ON public.news_articles;
 CREATE POLICY "Public Read News" ON public.news_articles FOR SELECT USING (true);
-CREATE POLICY "Admin All News" ON public.news_articles FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admin Manage News" ON public.news_articles FOR ALL TO authenticated, service_role USING (public.is_admin()) WITH CHECK (public.is_admin());
 
+DROP POLICY IF EXISTS "Public Read Events" ON public.events;
+DROP POLICY IF EXISTS "Admin Manage Events" ON public.events;
 CREATE POLICY "Public Read Events" ON public.events FOR SELECT USING (true);
-CREATE POLICY "Admin All Events" ON public.events FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admin Manage Events" ON public.events FOR ALL TO authenticated, service_role USING (public.is_admin()) WITH CHECK (public.is_admin());
 
+DROP POLICY IF EXISTS "Public Read Documents" ON public.documents;
+DROP POLICY IF EXISTS "Admin Manage Documents" ON public.documents;
 CREATE POLICY "Public Read Documents" ON public.documents FOR SELECT USING (true);
-CREATE POLICY "Admin All Documents" ON public.documents FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admin Manage Documents" ON public.documents FOR ALL TO authenticated, service_role USING (public.is_admin()) WITH CHECK (public.is_admin());
 
+DROP POLICY IF EXISTS "Public Read Gallery" ON public.gallery_albums;
+DROP POLICY IF EXISTS "Admin Manage Gallery" ON public.gallery_albums;
 CREATE POLICY "Public Read Gallery" ON public.gallery_albums FOR SELECT USING (true);
-CREATE POLICY "Admin All Gallery" ON public.gallery_albums FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admin Manage Gallery" ON public.gallery_albums FOR ALL TO authenticated, service_role USING (public.is_admin()) WITH CHECK (public.is_admin());
 
--- 4.6 CONTACT MESSAGES & RENEWALS
-CREATE POLICY "Public Insert Contact" ON public.contact_messages FOR INSERT WITH CHECK (true);
-CREATE POLICY "Admin All Contact" ON public.contact_messages FOR ALL USING (true) WITH CHECK (true);
+-- 5.7 CONTACT MESSAGES & RENEWAL REQUESTS
+DROP POLICY IF EXISTS "Public Insert Contact" ON public.contact_messages;
+DROP POLICY IF EXISTS "Admin Manage Contact" ON public.contact_messages;
+CREATE POLICY "Public Insert Contact" ON public.contact_messages FOR INSERT TO anon, authenticated WITH CHECK (true);
+CREATE POLICY "Admin Manage Contact" ON public.contact_messages FOR ALL TO authenticated, service_role USING (public.is_admin()) WITH CHECK (public.is_admin());
 
-CREATE POLICY "Public Insert Renewal" ON public.renewal_requests FOR INSERT WITH CHECK (true);
-CREATE POLICY "Public Read Renewal" ON public.renewal_requests FOR SELECT USING (true);
-CREATE POLICY "Admin All Renewal" ON public.renewal_requests FOR ALL USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "Public Insert Renewal" ON public.renewal_requests;
+DROP POLICY IF EXISTS "Member & Admin Read Renewal" ON public.renewal_requests;
+DROP POLICY IF EXISTS "Admin Manage Renewal" ON public.renewal_requests;
+CREATE POLICY "Public Insert Renewal" ON public.renewal_requests FOR INSERT TO anon, authenticated WITH CHECK (true);
+CREATE POLICY "Member & Admin Read Renewal" ON public.renewal_requests FOR SELECT TO authenticated, service_role USING (public.is_admin() OR (auth.uid() IS NOT NULL AND member_id IN (SELECT id FROM public.members WHERE user_id = auth.uid())));
+CREATE POLICY "Admin Manage Renewal" ON public.renewal_requests FOR ALL TO authenticated, service_role USING (public.is_admin()) WITH CHECK (public.is_admin());
 
--- 4.7 LOGS & NOTIFICATIONS
-CREATE POLICY "Allow Read Audit Logs" ON public.audit_logs FOR SELECT USING (true);
-CREATE POLICY "Allow Insert Audit Logs" ON public.audit_logs FOR INSERT WITH CHECK (true);
+-- 5.8 AUDIT & NOTIFICATION LOGS (Strict Admin & Procedure Only)
+DROP POLICY IF EXISTS "Admin Read Audit Logs" ON public.audit_logs;
+DROP POLICY IF EXISTS "System Insert Audit Logs" ON public.audit_logs;
+CREATE POLICY "Admin Read Audit Logs" ON public.audit_logs FOR SELECT TO authenticated, service_role USING (public.is_admin());
+CREATE POLICY "System Insert Audit Logs" ON public.audit_logs FOR INSERT TO anon, authenticated, service_role WITH CHECK (true);
 
-CREATE POLICY "Allow Read Notifications" ON public.notifications FOR SELECT USING (true);
-CREATE POLICY "Allow Insert Notifications" ON public.notifications FOR INSERT WITH CHECK (true);
-CREATE POLICY "Allow Update Notifications" ON public.notifications FOR UPDATE USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "User Read Own Notifications" ON public.notifications;
+DROP POLICY IF EXISTS "Admin Manage Notifications" ON public.notifications;
+CREATE POLICY "User Read Own Notifications" ON public.notifications FOR SELECT TO authenticated, service_role USING (auth.uid() IS NOT NULL AND target_user_id = auth.uid()::text);
+CREATE POLICY "Admin Manage Notifications" ON public.notifications FOR ALL TO authenticated, service_role USING (public.is_admin()) WITH CHECK (public.is_admin());
 
-CREATE POLICY "Allow Read Delivery Logs" ON public.notification_delivery_logs FOR SELECT USING (true);
-CREATE POLICY "Allow Insert Delivery Logs" ON public.notification_delivery_logs FOR INSERT WITH CHECK (true);
-CREATE POLICY "Allow Delete Delivery Logs" ON public.notification_delivery_logs FOR DELETE USING (true);
+DROP POLICY IF EXISTS "Admin Read Delivery Logs" ON public.notification_delivery_logs;
+DROP POLICY IF EXISTS "System Insert Delivery Logs" ON public.notification_delivery_logs;
+CREATE POLICY "Admin Read Delivery Logs" ON public.notification_delivery_logs FOR SELECT TO authenticated, service_role USING (public.is_admin());
+CREATE POLICY "System Insert Delivery Logs" ON public.notification_delivery_logs FOR INSERT TO anon, authenticated, service_role WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Public Read CMS Files" ON public.cms_files;
+DROP POLICY IF EXISTS "Admin Manage CMS Files" ON public.cms_files;
 CREATE POLICY "Public Read CMS Files" ON public.cms_files FOR SELECT USING (true);
-CREATE POLICY "Admin All CMS Files" ON public.cms_files FOR ALL USING (true) WITH CHECK (true);
-
--- 4.8 ADMIN ACCOUNTS
-CREATE POLICY "Admin Read Admin Accounts" ON public.admin_accounts FOR SELECT USING (true);
-CREATE POLICY "Admin Manage Admin Accounts" ON public.admin_accounts FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admin Manage CMS Files" ON public.cms_files FOR ALL TO authenticated, service_role USING (public.is_admin()) WITH CHECK (public.is_admin());
 
 -- ============================================================================
--- 5. STORAGE BUCKETS CONFIGURATION (Supabase Storage)
--- ============================================================================
-INSERT INTO storage.buckets (id, name, public) 
-VALUES 
-  ('passports', 'passports', true),
-  ('receipts', 'receipts', true),
-  ('documents', 'documents', true),
-  ('cms_files', 'cms_files', true),
-  ('gallery_photos', 'gallery_photos', true)
-ON CONFLICT (id) DO UPDATE SET public = true;
-
--- Storage RLS Policies
--- SELECT: Public access for portal media, documents, and verified images
-CREATE POLICY "Public Access Passports" ON storage.objects FOR SELECT USING (bucket_id = 'passports');
-CREATE POLICY "Public Access Receipts" ON storage.objects FOR SELECT USING (bucket_id = 'receipts');
-CREATE POLICY "Public Access Documents" ON storage.objects FOR SELECT USING (bucket_id = 'documents');
-CREATE POLICY "Public Access CMS" ON storage.objects FOR SELECT USING (bucket_id = 'cms_files');
-CREATE POLICY "Public Access Gallery" ON storage.objects FOR SELECT USING (bucket_id = 'gallery_photos');
-
--- INSERT: Uploads allowed for registration, receipts, documents and portal assets
-CREATE POLICY "Upload Passports" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'passports');
-CREATE POLICY "Upload Receipts" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'receipts');
-CREATE POLICY "Upload Documents" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'documents');
-CREATE POLICY "Upload CMS" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'cms_files');
-CREATE POLICY "Upload Gallery" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'gallery_photos');
-
--- UPDATE: Only owner or admin can update uploaded objects
-CREATE POLICY "Update Storage Objects" ON storage.objects FOR UPDATE USING (
-  bucket_id IN ('passports', 'receipts', 'documents', 'cms_files', 'gallery_photos')
-  AND (auth.uid() = owner OR auth.is_admin())
-) WITH CHECK (
-  bucket_id IN ('passports', 'receipts', 'documents', 'cms_files', 'gallery_photos')
-  AND (auth.uid() = owner OR auth.is_admin())
-);
-
--- DELETE: Only owner or admin can delete storage objects
-CREATE POLICY "Delete Storage Objects" ON storage.objects FOR DELETE USING (
-  bucket_id IN ('passports', 'receipts', 'documents', 'cms_files', 'gallery_photos')
-  AND (auth.uid() = owner OR auth.is_admin())
-);
-
--- ============================================================================
--- 6. SEED INITIAL CORE SETTINGS & BANK ACCOUNTS (IF EMPTY)
--- ============================================================================
-INSERT INTO public.forum_settings (
-  id, forum_name, tagline, primary_color, sky_color, contact_email, contact_phone, headquarters
-) VALUES (
-  'primary_settings',
-  'N-NEPEF 2020',
-  'Northern Nigerian Electrical Practitioners and Engineers Forum',
-  '#0A2E73',
-  '#2EA3F2',
-  'contact@nnepef.org.ng',
-  '+234 802 333 3937',
-  'National Secretariat, Kano, Nigeria'
-) ON CONFLICT (id) DO NOTHING;
-
-INSERT INTO public.bank_accounts (
-  id, bank_name, account_name, account_number, is_active, payment_instructions
-) VALUES (
-  'bank-default-1',
-  'Jaiz Bank Plc',
-  'N-NEPEF NATIONAL SECRETARIAT',
-  '0012345678',
-  true,
-  'Please upload bank transfer receipt immediately after payment during registration'
-) ON CONFLICT (id) DO NOTHING;
-
--- ============================================================================
--- 7. SECURE PUBLIC REGISTRATION RPC FUNCTIONS
+-- 6. SECURE STORED PROCEDURES (SECURITY DEFINER)
 -- ============================================================================
 
--- Overload A: Accepts single JSONB payload object
+-- 6.1 Unified Member Registration & Update RPC (Supports Upsert)
 CREATE OR REPLACE FUNCTION public.public_register_member(p_payload JSONB)
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -707,27 +673,13 @@ DECLARE
   v_id TEXT;
   v_app_ref TEXT;
   v_full_name TEXT;
-  v_gender TEXT;
-  v_dob TEXT;
-  v_phone TEXT;
-  v_email TEXT;
-  v_nin TEXT;
-  v_state TEXT;
-  v_lga TEXT;
-  v_address TEXT;
-  v_occupation TEXT;
-  v_specialization TEXT;
-  v_qualification TEXT;
-  v_years INT;
-  v_company TEXT;
-  v_passport_url TEXT;
-  v_receipt_url TEXT;
-  v_nok JSONB;
+  v_status TEXT;
+  v_membership_id TEXT;
   v_new_member public.members%ROWTYPE;
 BEGIN
   v_full_name := TRIM(COALESCE(p_payload->>'full_name', p_payload->>'fullName', ''));
   IF v_full_name IS NULL OR length(v_full_name) = 0 THEN
-    RETURN jsonb_build_object('success', false, 'error', 'Full Name is required for registration');
+    RETURN jsonb_build_object('success', false, 'error', 'Full Name is required');
   END IF;
 
   v_id := COALESCE(NULLIF(TRIM(p_payload->>'id'), ''), gen_random_uuid()::text);
@@ -737,28 +689,18 @@ BEGIN
     'APP-' || TO_CHAR(NOW(), 'YYYY') || '-' || LPAD(FLOOR(RANDOM() * 900000 + 100000)::TEXT, 6, '0')
   );
 
-  v_gender := COALESCE(p_payload->>'gender', 'Male');
-  v_dob := COALESCE(p_payload->>'dob', p_payload->>'date_of_birth', p_payload->>'dateOfBirth', NULL);
-  v_phone := NULLIF(TRIM(p_payload->>'phone'), '');
-  v_email := NULLIF(LOWER(TRIM(p_payload->>'email')), '');
-  v_nin := COALESCE(NULLIF(TRIM(p_payload->>'nin'), ''), NULLIF(TRIM(p_payload->>'nin_number'), ''), NULLIF(TRIM(p_payload->>'ninNumber'), ''));
-  v_state := COALESCE(p_payload->>'state', 'Kano');
-  v_lga := COALESCE(p_payload->>'lga', 'Kano Municipal');
-  v_address := COALESCE(NULLIF(TRIM(p_payload->>'residential_address'), ''), NULLIF(TRIM(p_payload->>'address'), ''), NULLIF(TRIM(p_payload->>'residentialAddress'), ''));
-  v_occupation := COALESCE(NULLIF(TRIM(p_payload->>'occupation'), ''), 'Practitioner');
-  v_specialization := COALESCE(p_payload->>'specialization', '');
-  v_qualification := COALESCE(p_payload->>'qualification', p_payload->>'highestQualification', '');
-  v_years := COALESCE((p_payload->>'years_of_experience')::INT, (p_payload->>'yearsOfExperience')::INT, 0);
-  v_company := COALESCE(p_payload->>'company', '');
-  v_passport_url := COALESCE(p_payload->>'passport_photo_url', p_payload->>'passport_url', p_payload->>'passportPhotoUrl', p_payload->>'passportUrl', '');
-  v_receipt_url := COALESCE(p_payload->>'payment_receipt_url', p_payload->>'paymentReceiptUrl', '');
-  v_nok := COALESCE(p_payload->'next_of_kin', p_payload->'nextOfKin', '{}'::JSONB);
+  v_status := LOWER(TRIM(COALESCE(p_payload->>'status', 'pending')));
+  v_membership_id := NULLIF(TRIM(COALESCE(p_payload->>'membership_id', p_payload->>'membershipId', '')), '');
 
   INSERT INTO public.members (
     id,
     membership_id,
     application_reference,
+    verification_code,
     full_name,
+    first_name,
+    middle_name,
+    last_name,
     gender,
     dob,
     date_of_birth,
@@ -768,11 +710,13 @@ BEGIN
     nin_number,
     state,
     lga,
+    ward,
     address,
     residential_address,
     occupation,
     specialization,
     qualification,
+    membership_type,
     years_of_experience,
     company,
     passport_url,
@@ -782,41 +726,106 @@ BEGIN
     status,
     role,
     position,
+    issue_date,
+    expiry_date,
+    notes,
+    approval_notification_sent,
+    approval_notification_sent_at,
+    approved_at,
+    approved_by,
+    rejected_by,
+    rejection_reason,
     registered_at,
     created_at,
     updated_at
   ) VALUES (
     v_id,
-    NULL,
+    v_membership_id,
     v_app_ref,
+    COALESCE(NULLIF(TRIM(p_payload->>'verification_code'), ''), NULLIF(TRIM(p_payload->>'verificationCode'), ''), 'VER-' || UPPER(SUBSTRING(MD5(RANDOM()::TEXT), 1, 8))),
     v_full_name,
-    v_gender,
-    v_dob,
-    v_dob,
-    v_phone,
-    v_email,
-    v_nin,
-    v_nin,
-    v_state,
-    v_lga,
-    v_address,
-    v_address,
-    v_occupation,
-    v_specialization,
-    v_qualification,
-    v_years,
-    v_company,
-    v_passport_url,
-    v_passport_url,
-    v_receipt_url,
-    v_nok,
-    'pending',
-    'Member',
-    'Member',
-    NOW(),
+    COALESCE(p_payload->>'first_name', p_payload->>'firstName', NULL),
+    COALESCE(p_payload->>'middle_name', p_payload->>'middleName', NULL),
+    COALESCE(p_payload->>'last_name', p_payload->>'lastName', NULL),
+    COALESCE(p_payload->>'gender', 'Male'),
+    COALESCE(p_payload->>'dob', p_payload->>'dateOfBirth'),
+    COALESCE(p_payload->>'dob', p_payload->>'dateOfBirth'),
+    NULLIF(TRIM(COALESCE(p_payload->>'phone', '')), ''),
+    NULLIF(LOWER(TRIM(COALESCE(p_payload->>'email', ''))), ''),
+    COALESCE(NULLIF(TRIM(p_payload->>'nin'), ''), NULLIF(TRIM(p_payload->>'ninNumber'), '')),
+    COALESCE(NULLIF(TRIM(p_payload->>'nin'), ''), NULLIF(TRIM(p_payload->>'ninNumber'), '')),
+    COALESCE(p_payload->>'state', 'Kano'),
+    COALESCE(p_payload->>'lga', 'Kano Municipal'),
+    COALESCE(p_payload->>'ward', NULL),
+    COALESCE(NULLIF(TRIM(p_payload->>'address'), ''), NULLIF(TRIM(p_payload->>'residentialAddress'), '')),
+    COALESCE(NULLIF(TRIM(p_payload->>'address'), ''), NULLIF(TRIM(p_payload->>'residentialAddress'), '')),
+    COALESCE(NULLIF(TRIM(p_payload->>'occupation'), ''), 'Practitioner'),
+    COALESCE(p_payload->>'specialization', ''),
+    COALESCE(p_payload->>'qualification', p_payload->>'highestQualification', ''),
+    COALESCE(p_payload->>'membership_type', p_payload->>'membershipType', 'Full Member'),
+    COALESCE((p_payload->>'years_of_experience')::INT, (p_payload->>'yearsOfExperience')::INT, 1),
+    COALESCE(p_payload->>'company', ''),
+    COALESCE(p_payload->>'passport_url', p_payload->>'passportPhotoUrl', p_payload->>'photoUrl', ''),
+    COALESCE(p_payload->>'passport_url', p_payload->>'passportPhotoUrl', p_payload->>'photoUrl', ''),
+    COALESCE(p_payload->>'payment_receipt_url', p_payload->>'paymentReceiptUrl', ''),
+    COALESCE(p_payload->'next_of_kin', p_payload->'nextOfKin', '{}'::JSONB),
+    v_status,
+    COALESCE(p_payload->>'role', 'Member'),
+    COALESCE(p_payload->>'position', 'Member'),
+    COALESCE(p_payload->>'issue_date', p_payload->>'issueDate'),
+    COALESCE(p_payload->>'expiry_date', p_payload->>'expiryDate'),
+    COALESCE(p_payload->>'notes', NULL),
+    COALESCE((p_payload->>'approval_notification_sent')::BOOLEAN, (p_payload->>'approvalNotificationSent')::BOOLEAN, false),
+    COALESCE(NULLIF(p_payload->>'approval_notification_sent_at', '')::TIMESTAMPTZ, NULLIF(p_payload->>'approvalNotificationSentAt', '')::TIMESTAMPTZ, NULL),
+    COALESCE(NULLIF(p_payload->>'approved_at', '')::TIMESTAMPTZ, NULLIF(p_payload->>'approvedAt', '')::TIMESTAMPTZ, NULL),
+    COALESCE(p_payload->>'approved_by', p_payload->>'approvedBy', NULL),
+    COALESCE(p_payload->>'rejected_by', p_payload->>'rejectedBy', NULL),
+    COALESCE(p_payload->>'rejection_reason', p_payload->>'rejectionReason', NULL),
+    COALESCE(NULLIF(p_payload->>'registered_at', '')::TIMESTAMPTZ, NULLIF(p_payload->>'registeredAt', '')::TIMESTAMPTZ, NOW()),
     NOW(),
     NOW()
   )
+  ON CONFLICT (id) DO UPDATE SET
+    full_name = EXCLUDED.full_name,
+    first_name = COALESCE(EXCLUDED.first_name, public.members.first_name),
+    middle_name = COALESCE(EXCLUDED.middle_name, public.members.middle_name),
+    last_name = COALESCE(EXCLUDED.last_name, public.members.last_name),
+    gender = COALESCE(EXCLUDED.gender, public.members.gender),
+    dob = COALESCE(EXCLUDED.dob, public.members.dob),
+    date_of_birth = COALESCE(EXCLUDED.date_of_birth, public.members.date_of_birth),
+    phone = COALESCE(EXCLUDED.phone, public.members.phone),
+    email = COALESCE(EXCLUDED.email, public.members.email),
+    nin = COALESCE(EXCLUDED.nin, public.members.nin),
+    nin_number = COALESCE(EXCLUDED.nin_number, public.members.nin_number),
+    state = COALESCE(EXCLUDED.state, public.members.state),
+    lga = COALESCE(EXCLUDED.lga, public.members.lga),
+    ward = COALESCE(EXCLUDED.ward, public.members.ward),
+    address = COALESCE(EXCLUDED.address, public.members.address),
+    residential_address = COALESCE(EXCLUDED.residential_address, public.members.residential_address),
+    occupation = COALESCE(EXCLUDED.occupation, public.members.occupation),
+    specialization = COALESCE(EXCLUDED.specialization, public.members.specialization),
+    qualification = COALESCE(EXCLUDED.qualification, public.members.qualification),
+    membership_type = COALESCE(EXCLUDED.membership_type, public.members.membership_type),
+    years_of_experience = COALESCE(EXCLUDED.years_of_experience, public.members.years_of_experience),
+    company = COALESCE(EXCLUDED.company, public.members.company),
+    passport_url = COALESCE(EXCLUDED.passport_url, public.members.passport_url),
+    passport_photo_url = COALESCE(EXCLUDED.passport_photo_url, public.members.passport_photo_url),
+    payment_receipt_url = COALESCE(EXCLUDED.payment_receipt_url, public.members.payment_receipt_url),
+    next_of_kin = COALESCE(EXCLUDED.next_of_kin, public.members.next_of_kin),
+    membership_id = COALESCE(EXCLUDED.membership_id, public.members.membership_id),
+    status = EXCLUDED.status,
+    role = COALESCE(EXCLUDED.role, public.members.role),
+    position = COALESCE(EXCLUDED.position, public.members.position),
+    issue_date = COALESCE(EXCLUDED.issue_date, public.members.issue_date),
+    expiry_date = COALESCE(EXCLUDED.expiry_date, public.members.expiry_date),
+    notes = COALESCE(EXCLUDED.notes, public.members.notes),
+    approval_notification_sent = COALESCE(EXCLUDED.approval_notification_sent, public.members.approval_notification_sent),
+    approval_notification_sent_at = COALESCE(EXCLUDED.approval_notification_sent_at, public.members.approval_notification_sent_at),
+    approved_at = COALESCE(EXCLUDED.approved_at, public.members.approved_at),
+    approved_by = COALESCE(EXCLUDED.approved_by, public.members.approved_by),
+    rejected_by = COALESCE(EXCLUDED.rejected_by, public.members.rejected_by),
+    rejection_reason = COALESCE(EXCLUDED.rejection_reason, public.members.rejection_reason),
+    updated_at = NOW()
   RETURNING * INTO v_new_member;
 
   RETURN jsonb_build_object(
@@ -825,9 +834,7 @@ BEGIN
     'membership_id', v_new_member.membership_id,
     'application_reference', v_new_member.application_reference,
     'full_name', v_new_member.full_name,
-    'status', v_new_member.status,
-    'registered_at', v_new_member.registered_at,
-    'member', to_jsonb(v_new_member)
+    'status', v_new_member.status
   );
 EXCEPTION
   WHEN OTHERS THEN
@@ -835,152 +842,249 @@ EXCEPTION
 END;
 $$;
 
--- Overload B: Accepts individual named parameters
-CREATE OR REPLACE FUNCTION public.public_register_member(
-  p_id TEXT,
-  p_full_name TEXT,
-  p_gender TEXT DEFAULT 'Male',
-  p_dob TEXT DEFAULT NULL,
-  p_phone TEXT DEFAULT NULL,
-  p_email TEXT DEFAULT NULL,
-  p_nin TEXT DEFAULT NULL,
-  p_state TEXT DEFAULT 'Kano',
-  p_lga TEXT DEFAULT 'Kano Municipal',
-  p_address TEXT DEFAULT NULL,
-  p_occupation TEXT DEFAULT NULL,
-  p_specialization TEXT DEFAULT NULL,
-  p_qualification TEXT DEFAULT NULL,
-  p_years_of_experience INTEGER DEFAULT 0,
-  p_company TEXT DEFAULT NULL,
-  p_passport_url TEXT DEFAULT NULL,
-  p_payment_receipt_url TEXT DEFAULT NULL,
-  p_application_reference TEXT DEFAULT NULL,
-  p_next_of_kin JSONB DEFAULT '{}'::jsonb
+-- 6.2 Admin Member Approval Stored Procedure
+CREATE OR REPLACE FUNCTION public.admin_approve_member(
+  p_member_id TEXT,
+  p_membership_id TEXT DEFAULT NULL,
+  p_approved_by TEXT DEFAULT 'Super Admin Secretariat',
+  p_position TEXT DEFAULT 'Member',
+  p_issue_date TEXT DEFAULT NULL,
+  p_expiry_date TEXT DEFAULT NULL
 )
-RETURNS JSONB
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, pg_temp
-AS $$
-BEGIN
-  RETURN public.public_register_member(
-    jsonb_build_object(
-      'id', p_id,
-      'full_name', p_full_name,
-      'gender', p_gender,
-      'dob', p_dob,
-      'phone', p_phone,
-      'email', p_email,
-      'nin', p_nin,
-      'state', p_state,
-      'lga', p_lga,
-      'address', p_address,
-      'occupation', p_occupation,
-      'specialization', p_specialization,
-      'qualification', p_qualification,
-      'years_of_experience', p_years_of_experience,
-      'company', p_company,
-      'passport_url', p_passport_url,
-      'payment_receipt_url', p_payment_receipt_url,
-      'application_reference', p_application_reference,
-      'next_of_kin', p_next_of_kin
-    )
-  );
-END;
-$$;
-
--- Alias for backward compatibility
-CREATE OR REPLACE FUNCTION public.register_member(
-  p_id TEXT,
-  p_full_name TEXT,
-  p_gender TEXT DEFAULT 'Male',
-  p_dob TEXT DEFAULT NULL,
-  p_phone TEXT DEFAULT NULL,
-  p_email TEXT DEFAULT NULL,
-  p_nin TEXT DEFAULT NULL,
-  p_state TEXT DEFAULT 'Kano',
-  p_lga TEXT DEFAULT 'Kano Municipal',
-  p_address TEXT DEFAULT NULL,
-  p_occupation TEXT DEFAULT NULL,
-  p_specialization TEXT DEFAULT NULL,
-  p_qualification TEXT DEFAULT NULL,
-  p_years_of_experience INTEGER DEFAULT 0,
-  p_company TEXT DEFAULT NULL,
-  p_passport_url TEXT DEFAULT NULL,
-  p_payment_receipt_url TEXT DEFAULT NULL,
-  p_application_reference TEXT DEFAULT NULL,
-  p_next_of_kin JSONB DEFAULT '{}'::jsonb
-)
-RETURNS JSONB
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, pg_temp
-AS $$
-BEGIN
-  RETURN public.public_register_member(
-    p_id, p_full_name, p_gender, p_dob, p_phone, p_email, p_nin,
-    p_state, p_lga, p_address, p_occupation, p_specialization, p_qualification,
-    p_years_of_experience, p_company, p_passport_url, p_payment_receipt_url,
-    p_application_reference, p_next_of_kin
-  );
-END;
-$$;
-
--- Diagnostic verification RPC
-CREATE OR REPLACE FUNCTION public.verify_member_status_diagnostic(p_member_id TEXT)
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
-  v_record RECORD;
+  v_member public.members%ROWTYPE;
+  v_gen_id TEXT;
+  v_state TEXT;
+  v_issue TEXT;
+  v_expiry TEXT;
 BEGIN
-  SELECT id, status, membership_id, application_reference, full_name, registered_at, approved_at
-  INTO v_record
+  IF p_member_id IS NULL OR length(trim(p_member_id)) = 0 THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Member ID is required');
+  END IF;
+
+  SELECT * INTO v_member FROM public.members WHERE id = trim(p_member_id);
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Member not found with ID ' || p_member_id);
+  END IF;
+
+  v_state := COALESCE(v_member.state, 'Kano');
+  v_gen_id := COALESCE(NULLIF(trim(p_membership_id), ''), v_member.membership_id);
+  
+  IF v_gen_id IS NULL OR length(v_gen_id) = 0 OR NOT v_gen_id LIKE 'NNEPEF/%' THEN
+    v_gen_id := 'NNEPEF/' || TO_CHAR(NOW(), 'YYYY') || '/' || UPPER(SUBSTRING(v_state, 1, 3)) || '/' || LPAD(FLOOR(RANDOM() * 9000 + 1000)::TEXT, 4, '0');
+  END IF;
+
+  v_issue := COALESCE(NULLIF(trim(p_issue_date), ''), TO_CHAR(NOW(), 'YYYY-MM-DD'));
+  v_expiry := COALESCE(NULLIF(trim(p_expiry_date), ''), TO_CHAR(NOW() + INTERVAL '5 years', 'YYYY-MM-DD'));
+
+  UPDATE public.members
+  SET 
+    status = 'approved',
+    membership_id = v_gen_id,
+    position = COALESCE(NULLIF(trim(p_position), ''), v_member.position, 'Member'),
+    issue_date = v_issue,
+    expiry_date = v_expiry,
+    approved_at = NOW(),
+    approved_by = COALESCE(NULLIF(trim(p_approved_by), ''), 'Super Admin Secretariat'),
+    approval_notification_sent = true,
+    approval_notification_sent_at = NOW(),
+    updated_at = NOW()
+  WHERE id = v_member.id
+  RETURNING * INTO v_member;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'id', v_member.id,
+    'membership_id', v_member.membership_id,
+    'status', v_member.status,
+    'full_name', v_member.full_name,
+    'approved_at', v_member.approved_at
+  );
+EXCEPTION
+  WHEN OTHERS THEN
+    RETURN jsonb_build_object('success', false, 'error', SQLERRM);
+END;
+$$;
+
+-- 6.3 Admin Member Rejection Stored Procedure
+CREATE OR REPLACE FUNCTION public.admin_reject_member(
+  p_member_id TEXT,
+  p_rejection_reason TEXT DEFAULT 'Application documentation or credentials verification issue',
+  p_rejected_by TEXT DEFAULT 'Admin Secretariat'
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_member public.members%ROWTYPE;
+BEGIN
+  IF p_member_id IS NULL OR length(trim(p_member_id)) = 0 THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Member ID is required');
+  END IF;
+
+  UPDATE public.members
+  SET 
+    status = 'rejected',
+    rejection_reason = COALESCE(NULLIF(trim(p_rejection_reason), ''), 'Application documentation or credentials verification issue'),
+    rejected_by = COALESCE(NULLIF(trim(p_rejected_by), ''), 'Admin Secretariat'),
+    notes = 'Application rejected on ' || TO_CHAR(NOW(), 'YYYY-MM-DD') || ' by ' || COALESCE(p_rejected_by, 'Admin') || '. Reason: ' || COALESCE(p_rejection_reason, 'Verification issue'),
+    updated_at = NOW()
+  WHERE id = trim(p_member_id)
+  RETURNING * INTO v_member;
+
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Member not found');
+  END IF;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'id', v_member.id,
+    'status', v_member.status,
+    'full_name', v_member.full_name
+  );
+EXCEPTION
+  WHEN OTHERS THEN
+    RETURN jsonb_build_object('success', false, 'error', SQLERRM);
+END;
+$$;
+
+-- 6.4 Admin Member Suspend & Restore Stored Procedures
+CREATE OR REPLACE FUNCTION public.admin_suspend_member(
+  p_member_id TEXT,
+  p_reason TEXT DEFAULT 'Suspended by Administrative Council'
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_member public.members%ROWTYPE;
+BEGIN
+  UPDATE public.members
+  SET 
+    status = 'suspended',
+    notes = COALESCE(notes || E'\n', '') || 'Suspended on ' || TO_CHAR(NOW(), 'YYYY-MM-DD') || ': ' || COALESCE(p_reason, 'Council review'),
+    updated_at = NOW()
+  WHERE id = trim(p_member_id)
+  RETURNING * INTO v_member;
+
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Member not found');
+  END IF;
+
+  RETURN jsonb_build_object('success', true, 'id', v_member.id, 'status', v_member.status);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.admin_restore_member(p_member_id TEXT)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_member public.members%ROWTYPE;
+BEGIN
+  UPDATE public.members
+  SET 
+    status = 'approved',
+    notes = COALESCE(notes || E'\n', '') || 'Restored on ' || TO_CHAR(NOW(), 'YYYY-MM-DD') || ' to Active status',
+    updated_at = NOW()
+  WHERE id = trim(p_member_id)
+  RETURNING * INTO v_member;
+
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Member not found');
+  END IF;
+
+  RETURN jsonb_build_object('success', true, 'id', v_member.id, 'status', v_member.status);
+END;
+$$;
+
+-- 6.5 Secure Diagnostic Verification RPC
+CREATE OR REPLACE FUNCTION public.verify_member_status_diagnostic(target_id TEXT)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_row RECORD;
+BEGIN
+  IF target_id IS NULL OR length(trim(target_id)) = 0 THEN
+    RETURN jsonb_build_object('exists', false, 'error', 'Target ID is required');
+  END IF;
+
+  SELECT id, application_reference, membership_id, status, registered_at, approved_at
+  INTO v_row
   FROM public.members
-  WHERE id = p_member_id OR LOWER(membership_id) = LOWER(p_member_id) OR LOWER(email) = LOWER(p_member_id)
+  WHERE id = trim(target_id)
+     OR LOWER(membership_id) = LOWER(trim(target_id))
+     OR LOWER(application_reference) = LOWER(trim(target_id))
+     OR LOWER(email) = LOWER(trim(target_id))
   LIMIT 1;
 
   IF FOUND THEN
     RETURN jsonb_build_object(
       'exists', true,
-      'id', v_record.id,
-      'status', v_record.status,
-      'membership_id', v_record.membership_id,
-      'application_reference', v_record.application_reference,
-      'full_name', v_record.full_name,
-      'registered_at', v_record.registered_at,
-      'approved_at', v_record.approved_at
+      'id', v_row.id,
+      'application_reference', v_row.application_reference,
+      'membership_id', v_row.membership_id,
+      'status', v_row.status,
+      'registered_at', v_row.registered_at,
+      'approved_at', v_row.approved_at
     );
   ELSE
-    RETURN jsonb_build_object('exists', false, 'id', p_member_id);
+    RETURN jsonb_build_object('exists', false);
   END IF;
 END;
 $$;
 
--- ============================================================================
--- 8. GRANT PRIVILEGES TO ROLES (Fix PostgREST Schema Cache & Access)
--- ============================================================================
-
-GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
-GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
-GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authenticated, service_role;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO anon, authenticated, service_role;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON ROUTINES TO anon, authenticated, service_role;
-
--- Grant explicit function execution
-GRANT EXECUTE ON FUNCTION public.is_admin() TO anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.public_register_member(JSONB) TO anon, authenticated, service_role;
-GRANT EXECUTE ON FUNCTION public.public_register_member(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, TEXT, TEXT, TEXT, TEXT, JSONB) TO anon, authenticated, service_role;
-GRANT EXECUTE ON FUNCTION public.register_member(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, TEXT, TEXT, TEXT, TEXT, JSONB) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.admin_approve_member(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.admin_reject_member(TEXT, TEXT, TEXT) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.admin_suspend_member(TEXT, TEXT) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.admin_restore_member(TEXT) TO anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.verify_member_status_diagnostic(TEXT) TO anon, authenticated, service_role;
 
 -- ============================================================================
--- 9. RELOAD POSTGREST SCHEMA CACHE
+-- 7. LEAST-PRIVILEGE ROLE GRANTS & RLS ACCESS
 -- ============================================================================
-NOTIFY pgrst, 'reload schema';
 
+GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+
+-- Grants on all portal tables (RLS policies govern row-level read/write permissions)
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.members TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.payment_records TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.renewal_requests TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.notifications TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.notification_delivery_logs TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.contact_messages TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.forum_settings TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.bank_accounts TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.fee_categories TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.executives TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.announcements TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.news_articles TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.events TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.documents TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.gallery_albums TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.cms_files TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.admin_accounts TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.audit_logs TO anon, authenticated, service_role;
+GRANT SELECT ON public.public_verified_members TO anon, authenticated, service_role;
+
+-- Service Role full access
+GRANT ALL ON ALL TABLES IN SCHEMA public TO service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO service_role;
+GRANT ALL ON ALL ROUTINES IN SCHEMA public TO service_role;
+
+NOTIFY pgrst, 'reload schema';

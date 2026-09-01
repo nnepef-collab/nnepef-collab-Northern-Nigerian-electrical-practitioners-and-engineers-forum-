@@ -787,68 +787,99 @@ export async function saveMemberToSupabase(member: Member): Promise<Member> {
   // 1. Direct client-side save via Supabase client (SECURITY DEFINER RPC or direct table)
   if (isSupabaseConfigured()) {
     try {
-      // Primary attempt: Call SECURITY DEFINER registration RPC with JSONB payload
       let rpcSuccess = false;
-      const { data: rpcData, error: rpcError } = await supabase.rpc('public_register_member', {
-        p_payload: payload
-      });
 
-      if (!rpcError && rpcData && (rpcData.success || rpcData.id)) {
-        clientSaved = true;
-        rpcSuccess = true;
-      } else if (rpcError) {
-        // Try fallback overload: individual named parameters
-        const { data: rpcParamData, error: rpcParamError } = await supabase.rpc('public_register_member', {
-          p_id: memberId,
-          p_full_name: member.fullName,
-          p_gender: member.gender || 'Male',
-          p_dob: member.dob || member.dateOfBirth || null,
-          p_phone: member.phone || null,
-          p_email: member.email ? member.email.toLowerCase().trim() : null,
-          p_nin: member.nin || member.ninNumber || null,
-          p_state: member.state || 'Kano',
-          p_lga: member.lga || 'Kano Municipal',
-          p_address: member.residentialAddress || member.address || null,
-          p_occupation: member.occupation || 'Practitioner',
-          p_specialization: member.specialization || '',
-          p_qualification: member.highestQualification || member.qualification || '',
-          p_years_of_experience: Number(member.yearsOfExperience) || 0,
-          p_company: member.company || '',
-          p_passport_url: member.passportPhotoUrl || member.passportUrl || '',
-          p_payment_receipt_url: member.paymentReceiptUrl || '',
-          p_application_reference: payload.application_reference,
-          p_next_of_kin: member.nextOfKin || {}
+      // If this is an approval action, invoke dedicated admin_approve_member RPC first
+      if (payload.status === 'approved') {
+        try {
+          const { data: approveData, error: approveError } = await supabase.rpc('admin_approve_member', {
+            p_member_id: memberId,
+            p_membership_id: payload.membership_id || null,
+            p_approved_by: payload.approved_by || 'Super Admin Secretariat',
+            p_position: payload.position || 'Member',
+            p_issue_date: payload.issue_date || null,
+            p_expiry_date: payload.expiry_date || null
+          });
+
+          if (!approveError && approveData && (approveData.success || approveData.id)) {
+            clientSaved = true;
+            rpcSuccess = true;
+          }
+        } catch (apprErr) {}
+      }
+
+      if (!rpcSuccess) {
+        // Call SECURITY DEFINER registration & upsert RPC with JSONB payload
+        const { data: rpcData, error: rpcError } = await supabase.rpc('public_register_member', {
+          p_payload: payload
         });
 
-        if (!rpcParamError && rpcParamData && (rpcParamData.success || rpcParamData.id)) {
+        if (!rpcError && rpcData && (rpcData.success || rpcData.id)) {
           clientSaved = true;
           rpcSuccess = true;
+        } else if (rpcError) {
+          // Try fallback overload: individual named parameters
+          const { data: rpcParamData, error: rpcParamError } = await supabase.rpc('public_register_member', {
+            p_id: memberId,
+            p_full_name: member.fullName,
+            p_gender: member.gender || 'Male',
+            p_dob: member.dob || member.dateOfBirth || null,
+            p_phone: member.phone || null,
+            p_email: member.email ? member.email.toLowerCase().trim() : null,
+            p_nin: member.nin || member.ninNumber || null,
+            p_state: member.state || 'Kano',
+            p_lga: member.lga || 'Kano Municipal',
+            p_address: member.residentialAddress || member.address || null,
+            p_occupation: member.occupation || 'Practitioner',
+            p_specialization: member.specialization || '',
+            p_qualification: member.highestQualification || member.qualification || '',
+            p_years_of_experience: Number(member.yearsOfExperience) || 0,
+            p_company: member.company || '',
+            p_passport_url: member.passportPhotoUrl || member.passportUrl || '',
+            p_payment_receipt_url: member.paymentReceiptUrl || '',
+            p_application_reference: payload.application_reference,
+            p_next_of_kin: member.nextOfKin || {}
+          });
+
+          if (!rpcParamError && rpcParamData && (rpcParamData.success || rpcParamData.id)) {
+            clientSaved = true;
+            rpcSuccess = true;
+          }
         }
       }
 
       if (!rpcSuccess) {
-        // Fallback: Direct table insert/update
-        const { error: insertError } = await supabase
+        // Fallback: Direct table upsert or insert/update
+        const { error: upsertError } = await supabase
           .from('members')
-          .insert(payload);
+          .upsert(payload, { onConflict: 'id' });
 
-        if (insertError) {
-          if (insertError.code === '23505' || insertError.message?.includes('duplicate key')) {
-            const { error: updateError } = await supabase
-              .from('members')
-              .update(payload)
-              .eq('id', memberId);
+        if (!upsertError) {
+          clientSaved = true;
+        } else {
+          // Try insert then update
+          const { error: insertError } = await supabase
+            .from('members')
+            .insert(payload);
 
-            if (!updateError) {
-              clientSaved = true;
+          if (insertError) {
+            if (insertError.code === '23505' || insertError.message?.includes('duplicate key')) {
+              const { error: updateError } = await supabase
+                .from('members')
+                .update(payload)
+                .eq('id', memberId);
+
+              if (!updateError) {
+                clientSaved = true;
+              } else {
+                clientErrorMsg = updateError.message;
+              }
             } else {
-              clientErrorMsg = updateError.message;
+              clientErrorMsg = insertError.message;
             }
           } else {
-            clientErrorMsg = insertError.message;
+            clientSaved = true;
           }
-        } else {
-          clientSaved = true;
         }
       }
     } catch (directErr: any) {

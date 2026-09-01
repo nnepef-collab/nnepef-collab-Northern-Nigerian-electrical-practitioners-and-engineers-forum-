@@ -134,6 +134,17 @@ async function startServer() {
     };
   });
 
+  // Schema raw download & view endpoint
+  app.get('/supabase_schema.sql', (_req, res) => {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.sendFile(path.join(process.cwd(), 'supabase_schema.sql'));
+  });
+
+  app.get('/api/schema.sql', (_req, res) => {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.sendFile(path.join(process.cwd(), 'supabase_schema.sql'));
+  });
+
   // Health check endpoint
   app.get('/api/health', (_req, res) => {
     res.json({ 
@@ -176,34 +187,35 @@ async function startServer() {
 
   // Helper to sync or write member payload to Supabase PostgreSQL table public.members
   async function syncMemberToSupabase(payload: any) {
-    if (!SUPABASE_URL || !SUPABASE_KEY) {
+    const effectiveKey = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_KEY;
+    if (!SUPABASE_URL || !effectiveKey) {
       return { success: false, error: 'Supabase credentials not available on server' };
     }
     try {
-      // 1. Plain POST to public.members (satisfies Public Applicant Insert Only RLS policy)
+      // 1. Plain POST to public.members (supports upsert via merge-duplicates)
       const response = await fetch(`${SUPABASE_URL}/rest/v1/members`, {
         method: 'POST',
         headers: {
-          'apikey': SUPABASE_KEY,
-          'Authorization': `Bearer ${SUPABASE_KEY}`,
+          'apikey': effectiveKey,
+          'Authorization': `Bearer ${effectiveKey}`,
           'Content-Type': 'application/json',
-          'Prefer': 'return=minimal'
+          'Prefer': 'resolution=merge-duplicates,return=minimal'
         },
         body: JSON.stringify(payload)
       });
 
       if (response.status === 201 || response.status === 200 || response.status === 204) {
-        console.log('[Supabase PostgreSQL INSERT Success] Status', response.status, 'for', payload.id, payload.full_name);
+        console.log('[Supabase PostgreSQL INSERT/UPSERT Success] Status', response.status, 'for', payload.id, payload.full_name);
         return { success: true, status: response.status };
       }
 
-      // If duplicate key (409 Conflict), update with PATCH
-      if (response.status === 409) {
+      // If conflict or RLS requires PATCH, update with PATCH
+      if (response.status === 409 || response.status === 400 || response.status === 403) {
         const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/members?id=eq.${encodeURIComponent(payload.id)}`, {
           method: 'PATCH',
           headers: {
-            'apikey': SUPABASE_KEY,
-            'Authorization': `Bearer ${SUPABASE_KEY}`,
+            'apikey': effectiveKey,
+            'Authorization': `Bearer ${effectiveKey}`,
             'Content-Type': 'application/json'
           },
           body: JSON.stringify(payload)
@@ -219,8 +231,8 @@ async function startServer() {
         const rpcRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/public_register_member`, {
           method: 'POST',
           headers: {
-            'apikey': SUPABASE_KEY,
-            'Authorization': `Bearer ${SUPABASE_KEY}`,
+            'apikey': effectiveKey,
+            'Authorization': `Bearer ${effectiveKey}`,
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({ p_payload: payload })
@@ -524,19 +536,99 @@ async function startServer() {
       if (updates.approvalNotificationSent !== undefined) payload.approval_notification_sent = updates.approvalNotificationSent;
       if (updates.approvalNotificationSentAt !== undefined) payload.approval_notification_sent_at = updates.approvalNotificationSentAt;
 
-      if (SUPABASE_URL && SUPABASE_KEY) {
+      const effectiveKey = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_KEY;
+      if (SUPABASE_URL && effectiveKey) {
         try {
+          // If status is approved, try calling the dedicated admin_approve_member RPC
+          if (payload.status === 'approved') {
+            try {
+              await fetch(`${SUPABASE_URL}/rest/v1/rpc/admin_approve_member`, {
+                method: 'POST',
+                headers: {
+                  'apikey': effectiveKey,
+                  'Authorization': `Bearer ${effectiveKey}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  p_member_id: id,
+                  p_membership_id: payload.membership_id || null,
+                  p_approved_by: payload.approved_by || 'Super Admin Secretariat',
+                  p_position: payload.position || 'Member'
+                })
+              });
+            } catch (rpcApproveErr) {}
+          }
+
           await fetch(`${SUPABASE_URL}/rest/v1/members?id=eq.${encodeURIComponent(id)}`, {
             method: 'PATCH',
             headers: {
-              'apikey': SUPABASE_KEY,
-              'Authorization': `Bearer ${SUPABASE_KEY}`,
+              'apikey': effectiveKey,
+              'Authorization': `Bearer ${effectiveKey}`,
               'Content-Type': 'application/json'
             },
             body: JSON.stringify(payload)
           });
         } catch (patchErr) {
           console.warn('[Supabase PATCH Notice]:', patchErr);
+        }
+      }
+
+      return res.json({ success: true, member: updatedMember });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // POST /api/members/approve - Dedicated member approval endpoint
+  app.post('/api/members/approve', async (req, res) => {
+    try {
+      const { memberId, membershipId, approvedBy, position, issueDate, expiryDate } = req.body;
+      if (!memberId) {
+        return res.status(400).json({ success: false, error: 'memberId is required' });
+      }
+
+      const stored = readStoredMembers();
+      const idx = stored.findIndex(m => m.id === memberId);
+      let updatedMember: any = null;
+
+      if (idx >= 0) {
+        stored[idx] = {
+          ...stored[idx],
+          status: 'approved',
+          membershipId: membershipId || stored[idx].membershipId,
+          position: position || stored[idx].position || 'Member',
+          issueDate: issueDate || stored[idx].issueDate || new Date().toISOString().split('T')[0],
+          expiryDate: expiryDate || stored[idx].expiryDate || new Date(Date.now() + 5 * 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          approvedAt: new Date().toISOString(),
+          approvedBy: approvedBy || 'Super Admin Secretariat',
+          approvalNotificationSent: true,
+          approvalNotificationSentAt: new Date().toISOString()
+        };
+        updatedMember = stored[idx];
+        writeStoredMembers(stored);
+      }
+
+      const effectiveKey = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_KEY;
+      if (SUPABASE_URL && effectiveKey) {
+        try {
+          await fetch(`${SUPABASE_URL}/rest/v1/rpc/admin_approve_member`, {
+            method: 'POST',
+            headers: {
+              'apikey': effectiveKey,
+              'Authorization': `Bearer ${effectiveKey}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              p_member_id: memberId,
+              p_membership_id: membershipId || null,
+              p_approved_by: approvedBy || 'Super Admin Secretariat',
+              p_position: position || 'Member',
+              p_issue_date: issueDate || null,
+              p_expiry_date: expiryDate || null
+            })
+          });
+        } catch (rpcErr) {
+          console.warn('[Supabase admin_approve_member RPC Error]:', rpcErr);
         }
       }
 
@@ -557,13 +649,14 @@ async function startServer() {
       writeStoredMembers(filtered);
 
       // 2. Delete from Supabase
-      if (SUPABASE_URL && SUPABASE_KEY) {
+      const effectiveKey = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_KEY;
+      if (SUPABASE_URL && effectiveKey) {
         try {
           await fetch(`${SUPABASE_URL}/rest/v1/members?id=eq.${encodeURIComponent(id)}`, {
             method: 'DELETE',
             headers: {
-              'apikey': SUPABASE_KEY,
-              'Authorization': `Bearer ${SUPABASE_KEY}`
+              'apikey': effectiveKey,
+              'Authorization': `Bearer ${effectiveKey}`
             }
           });
         } catch (delErr) {
