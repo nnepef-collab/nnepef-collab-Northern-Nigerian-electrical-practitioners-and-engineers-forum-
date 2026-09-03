@@ -30,17 +30,40 @@ import {
   fetchApprovedMembersFromSupabase,
   savePaymentToSupabase,
   saveSettingsToSupabase,
-  fetchSupabaseDiagnostics
-} from './services/supabaseService';
-import {
-  subscribeToPayments,
-  savePaymentToSQLite,
+  fetchSettingsFromSupabase,
+  fetchAnnouncementsFromSupabase,
+  saveAnnouncementToSupabase,
+  fetchNewsFromSupabase,
+  saveNewsToSupabase,
+  fetchExecutivesFromSupabase,
+  saveExecutiveToSupabase,
+  fetchEventsFromSupabase,
+  saveEventToSupabase,
+  fetchDocumentsFromSupabase,
+  saveDocumentToSupabase,
+  fetchGalleryFromSupabase,
+  saveGalleryToSupabase,
+  fetchContactMessagesFromSupabase,
+  saveContactMessageToSupabase,
+  fetchRenewalsFromSupabase,
+  saveRenewalToSupabase,
+  fetchCMSFilesFromSupabase,
+  saveCMSFileToSupabase,
+  fetchNotificationsFromSupabase,
+  fetchAuditLogsFromSupabase,
+  fetchSupabaseDiagnostics,
+  fetchAdminsFromSupabase,
+  saveAdminToSupabase,
+  fetchNotificationDeliveryLogsFromSupabase,
+  saveNotificationDeliveryLogToSupabase,
+  saveAuditLogToSupabase,
   saveAndVerifyReceiptInSQLite,
+  subscribeToPayments,
   subscribeToNotificationLogs,
   subscribeToNotifications,
   subscribeToAuditLogs,
   subscribeToSettings
-} from './services/sqliteService';
+} from './services/supabaseService';
 
 import { 
   restoreSupabaseSession, 
@@ -297,27 +320,58 @@ export default function App() {
         }
 
         // 2. Fetch authoritative data from Supabase
-        const [freshMembers, freshPayments] = await Promise.all([
+        const [
+          freshMembers,
+          freshPayments,
+          freshSettings,
+          freshAnnouncements,
+          freshNews,
+          freshExecutives,
+          freshEvents,
+          freshDocuments,
+          freshGallery,
+          freshContactMessages,
+          freshRenewals,
+          freshCMS,
+          freshAudit,
+          freshNotifs,
+          freshAdmins,
+          freshDeliveryLogs
+        ] = await Promise.all([
           fetchMembersFromSupabase(),
-          fetchPaymentsFromSupabase()
+          fetchPaymentsFromSupabase(),
+          fetchSettingsFromSupabase(),
+          fetchAnnouncementsFromSupabase(),
+          fetchNewsFromSupabase(),
+          fetchExecutivesFromSupabase(),
+          fetchEventsFromSupabase(),
+          fetchDocumentsFromSupabase(),
+          fetchGalleryFromSupabase(),
+          fetchContactMessagesFromSupabase(),
+          fetchRenewalsFromSupabase(),
+          fetchCMSFilesFromSupabase(),
+          fetchAuditLogsFromSupabase(),
+          fetchNotificationsFromSupabase(),
+          fetchAdminsFromSupabase(),
+          fetchNotificationDeliveryLogsFromSupabase()
         ]);
         if (isMounted) {
           setMembers(prev => JSON.stringify(prev) === JSON.stringify(freshMembers) ? prev : (freshMembers || []));
           setPayments(prev => JSON.stringify(prev) === JSON.stringify(freshPayments) ? prev : (freshPayments || []));
-          setSettings(getLocalSettings());
-          setAdmins(getLocalAdmins());
-          setCmsFiles(getLocalCMSFiles());
-          setExecutives(getLocalExecutives());
-          setNews(getLocalNews());
-          setEvents(getLocalEvents());
-          setAnnouncements(getLocalAnnouncements());
-          setRenewalRequests(getLocalRenewals());
-          setDocuments(getLocalDocuments());
-          setGallery(getLocalGallery());
-          setContactMessages(getLocalContactMessages());
-          setAuditLogs(getLocalAuditLogs());
-          setNotifications(getLocalNotifications());
-          setNotificationLogs(getLocalDeliveryLogs());
+          setSettings(freshSettings || getLocalSettings());
+          setAdmins(freshAdmins && freshAdmins.length > 0 ? freshAdmins : getLocalAdmins());
+          setCmsFiles(freshCMS || getLocalCMSFiles());
+          setExecutives(freshExecutives || getLocalExecutives());
+          setNews(freshNews || getLocalNews());
+          setEvents(freshEvents || getLocalEvents());
+          setAnnouncements(freshAnnouncements || getLocalAnnouncements());
+          setRenewalRequests(freshRenewals || getLocalRenewals());
+          setDocuments(freshDocuments || getLocalDocuments());
+          setGallery(freshGallery || getLocalGallery());
+          setContactMessages(freshContactMessages || getLocalContactMessages());
+          setAuditLogs(freshAudit || getLocalAuditLogs());
+          setNotifications(freshNotifs || getLocalNotifications());
+          setNotificationLogs(freshDeliveryLogs && freshDeliveryLogs.length > 0 ? freshDeliveryLogs : getLocalDeliveryLogs());
         }
       } catch (err) {
         console.error('🔴 [App Startup Error] Supabase/local startup error:', err);
@@ -387,13 +441,16 @@ export default function App() {
 
   // Handler for adding Audit Logs
   const handleAddAuditLog = (action: string, details: string) => {
+    const actorName = isAdminLoggedIn ? 'Super Admin' : (currentUser?.fullName || 'System User');
+    const actorRole = isAdminLoggedIn ? 'Super Admin' : (currentUser?.role || 'Member');
     const newLog = addLocalAuditLog(
-      isAdminLoggedIn ? 'Super Admin' : (currentUser?.fullName || 'System User'),
-      isAdminLoggedIn ? 'Super Admin' : (currentUser?.role || 'Member'),
+      actorName,
+      actorRole,
       action,
       details
     );
     setAuditLogs(prev => [newLog, ...prev]);
+    saveAuditLogToSupabase(newLog);
   };
 
   // Register New Member (Authoritative Supabase PostgreSQL Save)
@@ -507,6 +564,7 @@ export default function App() {
     if (!newList) return;
     const verified = saveLocalPaymentsList(newList);
     setPayments(verified);
+    newList.forEach(p => savePaymentToSupabase(p));
   };
 
   // Safe Settings Update (Supabase PostgreSQL Save)
@@ -521,6 +579,7 @@ export default function App() {
     if (!newAdmins) return;
     const verified = saveLocalAdmins(newAdmins);
     setAdmins(verified);
+    newAdmins.forEach(a => saveAdminToSupabase(a));
   };
 
   // Safe CMS Files Update
@@ -528,47 +587,56 @@ export default function App() {
     if (!newFiles) return;
     const verified = saveLocalCMSFiles(newFiles);
     setCmsFiles(verified);
+    newFiles.forEach(f => saveCMSFileToSupabase(f));
   };
 
   // Safe Collections Updates
   const handleUpdateExecutives = (list: Executive[]) => {
     const verified = saveLocalExecutives(list);
     setExecutives(verified);
+    list.forEach(e => saveExecutiveToSupabase(e));
   };
 
   const handleUpdateNews = (list: NewsArticle[]) => {
     const verified = saveLocalNews(list);
     setNews(verified);
+    list.forEach(n => saveNewsToSupabase(n));
   };
 
   const handleUpdateEvents = (list: EventItem[]) => {
     const verified = saveLocalEvents(list);
     setEvents(verified);
+    list.forEach(ev => saveEventToSupabase(ev));
   };
 
   const handleUpdateAnnouncements = (list: Announcement[]) => {
     const verified = saveLocalAnnouncements(list);
     setAnnouncements(verified);
+    list.forEach(a => saveAnnouncementToSupabase(a));
   };
 
   const handleUpdateDocuments = (list: DocumentItem[]) => {
     const verified = saveLocalDocuments(list);
     setDocuments(verified);
+    list.forEach(d => saveDocumentToSupabase(d));
   };
 
   const handleUpdateGallery = (list: GalleryAlbum[]) => {
     const verified = saveLocalGallery(list);
     setGallery(verified);
+    list.forEach(g => saveGalleryToSupabase(g));
   };
 
   const handleUpdateContactMessages = (list: ContactMessage[]) => {
     const verified = saveLocalContactMessages(list);
     setContactMessages(verified);
+    list.forEach(m => saveContactMessageToSupabase(m));
   };
 
   const handleUpdateRenewalRequests = (list: RenewalRequest[]) => {
     const verified = saveLocalRenewals(list);
     setRenewalRequests(verified);
+    list.forEach(r => saveRenewalToSupabase(r));
   };
 
   const handleUpdateNotifications = (list: NotificationItem[]) => {
@@ -579,6 +647,7 @@ export default function App() {
   const handleUpdateNotificationLogs = (list: NotificationDeliveryLog[]) => {
     const verified = saveLocalDeliveryLogs(list);
     setNotificationLogs(verified);
+    list.forEach(l => saveNotificationDeliveryLogToSupabase(l));
   };
 
   // Submit Renewal Request
@@ -590,6 +659,9 @@ export default function App() {
     saveLocalPaymentsList(updatedPayments);
     setRenewalRequests(updatedRenewals);
     setPayments(updatedPayments);
+
+    saveRenewalToSupabase(newRequest);
+    savePaymentToSupabase(newPaymentRecord);
 
     if (newRequest.receiptUrl) {
       await saveAndVerifyReceiptInSQLite(newPaymentRecord, newRequest.memberId, newRequest.receiptUrl);

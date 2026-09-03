@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ForumSettings, BankAccount } from '../types';
-import { getLocalBankAccounts, saveLocalBankAccounts } from '../services/localDatabaseService';
+import { fetchBankAccountsFromSupabase, saveBankAccountToSupabase, deleteBankAccountFromSupabase } from '../services/supabaseService';
 import { 
   Building2, 
   Plus, 
@@ -34,12 +34,17 @@ export const BankAccountManager: React.FC<BankAccountManagerProps> = ({
 }) => {
   const isAuthorized = currentAdminRole === 'super_admin' || currentAdminRole === 'admin' || currentAdminRole?.includes('Admin');
 
-  // Bank Accounts State - Initialized from Authoritative Local Storage
-  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>(() => getLocalBankAccounts());
+  // Bank Accounts State - Initialized from Settings & Supabase
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>(() => settings.bankAccounts || []);
 
   useEffect(() => {
-    const current = getLocalBankAccounts();
-    setBankAccounts(current);
+    if (settings.bankAccounts && settings.bankAccounts.length > 0) {
+      setBankAccounts(settings.bankAccounts);
+    } else {
+      fetchBankAccountsFromSupabase().then(accs => {
+        if (accs && accs.length > 0) setBankAccounts(accs);
+      });
+    }
   }, [settings.bankAccounts]);
 
   // Form & Modal States
@@ -63,16 +68,19 @@ export const BankAccountManager: React.FC<BankAccountManagerProps> = ({
   };
 
   // Helper to sync updated bank accounts array to global settings & database with read-back verification
-  const saveBankAccountsToSettings = (updatedAccounts: BankAccount[], actionMsg?: string) => {
-    // 1. Read, save, and verify in Authoritative Local Storage
-    const verifiedAccounts = saveLocalBankAccounts(updatedAccounts);
-    setBankAccounts(verifiedAccounts);
+  const saveBankAccountsToSettings = async (updatedAccounts: BankAccount[], actionMsg?: string) => {
+    setBankAccounts(updatedAccounts);
 
-    const activeBank = verifiedAccounts.find(b => b.isActive) || (verifiedAccounts.length > 0 ? verifiedAccounts[0] : null);
+    // Save each account to Supabase
+    for (const acc of updatedAccounts) {
+      await saveBankAccountToSupabase(acc);
+    }
+
+    const activeBank = updatedAccounts.find(b => b.isActive) || (updatedAccounts.length > 0 ? updatedAccounts[0] : null);
 
     const updatedSettings: ForumSettings = {
       ...settings,
-      bankAccounts: verifiedAccounts,
+      bankAccounts: updatedAccounts,
       bankName: activeBank ? activeBank.bankName : '',
       bankAccountName: activeBank ? activeBank.accountName : '',
       bankAccountNumber: activeBank ? activeBank.accountNumber : '',
@@ -189,6 +197,7 @@ export const BankAccountManager: React.FC<BankAccountManagerProps> = ({
     }
 
     const remaining = bankAccounts.filter(b => b.id !== bank.id);
+    deleteBankAccountFromSupabase(bank.id);
     
     // If deleted bank was active and remaining exist, make first remaining account active
     if (bank.isActive && remaining.length > 0) {

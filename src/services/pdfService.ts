@@ -238,12 +238,12 @@ export async function downloadMemberProfilePdf(member: Member, settings?: ForumS
     ['Resident Address:', member.address || member.residentialAddress || '—', 'Email (Optional):', member.email || 'None']
   ]);
 
-  // Section B: Identification
-  drawSectionHeader('2. IDENTIFICATION DETAILS');
+  // Section B: Official Membership & Secretariat Records
+  drawSectionHeader('2. OFFICIAL MEMBERSHIP & SECRETARIAT RECORDS');
   drawInfoTable([
-    ['NIN Number:', member.nin || member.ninNumber || '—', 'Other ID Type:', member.otherIdType || 'None'],
-    ['Other ID Number:', member.otherIdNumber || 'None', 'Application Ref:', member.applicationReference || member.id],
-    ['Assigned Member ID:', member.membershipId || 'Pending Admin Allocation', 'ID Status:', (member.status === 'approved' ? 'Active / Approved' : 'Pending Verification')]
+    ['Application Ref:', member.applicationReference || member.id, 'Verification Code:', member.verificationCode || 'VERIFIED'],
+    ['Assigned Member ID:', member.membershipId || 'Pending Admin Allocation', 'Membership Status:', (member.status === 'approved' ? 'Active / Approved' : 'Pending Verification')],
+    ['Membership Type:', member.membershipType || 'Full Member', 'Chapter State:', `${member.state} State`]
   ]);
 
   // Section C: Educational Background
@@ -612,7 +612,7 @@ export async function downloadApprovalSlipPdf(member: Member, settings?: ForumSe
     ['Phone Number:', member.phone || '—', 'Email Address:', member.email || 'None'],
     ['Specialization:', member.specialization || member.occupation || 'Electrical Engineering', 'Years of Exp:', `${member.yearsOfExperience || 0} Years`],
     ['Residential Address:', member.address || member.residentialAddress || '—', 'Nationality:', member.nationality || 'Nigerian'],
-    ['National ID (NIN):', member.nin ? `${member.nin.substring(0, 4)}••••${member.nin.substring(member.nin.length - 3)}` : 'Verified', 'Approval Date:', member.approvedAt ? new Date(member.approvedAt).toLocaleDateString('en-GB') : 'Confirmed']
+    ['Chapter & State:', `${member.state || 'Kano'} State Chapter`, 'Approval Date:', member.approvedAt ? new Date(member.approvedAt).toLocaleDateString('en-GB') : 'Confirmed']
   ];
 
   const col1W = 38;

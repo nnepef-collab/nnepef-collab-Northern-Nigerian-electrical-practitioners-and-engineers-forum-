@@ -1,7 +1,7 @@
 -- ============================================================================
--- N-NEPEF 2020 DIGITAL PORTAL - MASTER DATABASE SETUP
+-- N-NEPEF 2020 DIGITAL PORTAL - UNIFIED PRODUCTION DATABASE MIGRATION & SCHEMA
 -- Northern Nigerian Electrical Practitioners and Engineers Forum
--- Production-Ready, Secure, Schema Reset Compliant
+-- Idempotent, Non-Destructive, Preserves All Existing Data
 -- ============================================================================
 
 -- 1. EXTENSIONS
@@ -20,14 +20,18 @@ STABLE
 SET search_path = public, pg_temp
 AS $$
   SELECT (
+    -- Service role bypass for serverless API handlers
     auth.role() = 'service_role'
+    -- Trusted Supabase app_metadata claims
     OR (auth.jwt()->'app_metadata'->>'role') IN ('super_admin', 'national_admin', 'state_admin', 'lga_admin', 'treasurer', 'secretary', 'admin')
     OR (auth.jwt()->>'role') IN ('super_admin', 'national_admin', 'state_admin', 'lga_admin', 'treasurer', 'secretary', 'admin')
+    -- Active administrative personnel account verification
     OR EXISTS (
       SELECT 1 FROM public.admin_accounts 
       WHERE (user_id = auth.uid() OR email = auth.jwt()->>'email') 
       AND LOWER(status) = 'active'
     )
+    -- Active administrative member profile verification
     OR EXISTS (
       SELECT 1 FROM public.members 
       WHERE (user_id = auth.uid() OR id = auth.uid()::text) 
@@ -67,7 +71,7 @@ GRANT EXECUTE ON FUNCTION public.is_admin() TO anon, authenticated, service_role
 GRANT EXECUTE ON FUNCTION public.is_super_admin() TO anon, authenticated, service_role;
 
 -- ============================================================================
--- 3. CORE DATABASE TABLES (18 TABLES)
+-- 3. CORE TABLES (IDEMPOTENT CREATION)
 -- ============================================================================
 
 -- 3.1 FORUM SETTINGS
@@ -130,7 +134,7 @@ CREATE TABLE IF NOT EXISTS public.fee_categories (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 3.4 MEMBERS TABLE (Primary Central Directory)
+-- 3.4 PRIMARY MEMBERS TABLE
 CREATE TABLE IF NOT EXISTS public.members (
   id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
   user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
@@ -180,6 +184,53 @@ CREATE TABLE IF NOT EXISTS public.members (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Idempotent Column Alterations (In case table already existed with missing columns)
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS membership_id TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS application_reference TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS verification_code TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS first_name TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS middle_name TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS last_name TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS gender TEXT DEFAULT 'Male';
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS dob TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS date_of_birth TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS phone TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS email TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS nin TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS nin_number TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS state TEXT DEFAULT 'Kano';
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS lga TEXT DEFAULT 'Kano Municipal';
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS ward TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS address TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS residential_address TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS occupation TEXT DEFAULT 'Practitioner';
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS specialization TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS qualification TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS membership_type TEXT DEFAULT 'Full Member';
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS years_of_experience INTEGER DEFAULT 1;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS company TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS passport_url TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS passport_photo_url TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS payment_receipt_url TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS next_of_kin JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending';
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'Member';
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS position TEXT DEFAULT 'Member';
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS issue_date TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS expiry_date TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS notes TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS approval_notification_sent BOOLEAN DEFAULT false;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS approval_notification_sent_at TIMESTAMPTZ;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS approved_by TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS rejected_by TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS registered_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
+-- Members Indexes
 CREATE INDEX IF NOT EXISTS idx_members_email ON public.members(email);
 CREATE INDEX IF NOT EXISTS idx_members_phone ON public.members(phone);
 CREATE INDEX IF NOT EXISTS idx_members_membership_id ON public.members(membership_id);
@@ -212,6 +263,26 @@ CREATE TABLE IF NOT EXISTS public.payment_records (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Idempotent Column Alterations on payment_records
+ALTER TABLE public.payment_records ADD COLUMN IF NOT EXISTS member_id TEXT REFERENCES public.members(id) ON DELETE SET NULL;
+ALTER TABLE public.payment_records ADD COLUMN IF NOT EXISTS member_name TEXT;
+ALTER TABLE public.payment_records ADD COLUMN IF NOT EXISTS membership_id TEXT;
+ALTER TABLE public.payment_records ADD COLUMN IF NOT EXISTS state TEXT;
+ALTER TABLE public.payment_records ADD COLUMN IF NOT EXISTS lga TEXT;
+ALTER TABLE public.payment_records ADD COLUMN IF NOT EXISTS type TEXT;
+ALTER TABLE public.payment_records ADD COLUMN IF NOT EXISTS amount NUMERIC DEFAULT 0;
+ALTER TABLE public.payment_records ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Pending';
+ALTER TABLE public.payment_records ADD COLUMN IF NOT EXISTS receipt_url TEXT;
+ALTER TABLE public.payment_records ADD COLUMN IF NOT EXISTS date TEXT;
+ALTER TABLE public.payment_records ADD COLUMN IF NOT EXISTS reference TEXT;
+ALTER TABLE public.payment_records ADD COLUMN IF NOT EXISTS payment_method TEXT DEFAULT 'Bank Transfer';
+ALTER TABLE public.payment_records ADD COLUMN IF NOT EXISTS remarks TEXT;
+ALTER TABLE public.payment_records ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
+ALTER TABLE public.payment_records ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+ALTER TABLE public.payment_records ADD COLUMN IF NOT EXISTS approved_by TEXT;
+ALTER TABLE public.payment_records ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE public.payment_records ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
 CREATE INDEX IF NOT EXISTS idx_payments_member_id ON public.payment_records(member_id);
 CREATE INDEX IF NOT EXISTS idx_payments_reference ON public.payment_records(reference);
 CREATE INDEX IF NOT EXISTS idx_payments_status ON public.payment_records(status);
@@ -234,13 +305,30 @@ CREATE TABLE IF NOT EXISTS public.admin_accounts (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+ALTER TABLE public.admin_accounts ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL;
+ALTER TABLE public.admin_accounts ADD COLUMN IF NOT EXISTS full_name TEXT;
+ALTER TABLE public.admin_accounts ADD COLUMN IF NOT EXISTS email TEXT;
+ALTER TABLE public.admin_accounts ADD COLUMN IF NOT EXISTS phone TEXT;
+ALTER TABLE public.admin_accounts ADD COLUMN IF NOT EXISTS username TEXT;
+ALTER TABLE public.admin_accounts ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'Admin';
+ALTER TABLE public.admin_accounts ADD COLUMN IF NOT EXISTS state TEXT;
+ALTER TABLE public.admin_accounts ADD COLUMN IF NOT EXISTS lga TEXT;
+ALTER TABLE public.admin_accounts ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
+ALTER TABLE public.admin_accounts ADD COLUMN IF NOT EXISTS permissions JSONB DEFAULT '["ALL"]'::jsonb;
+ALTER TABLE public.admin_accounts ADD COLUMN IF NOT EXISTS last_login TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS idx_admin_accounts_email ON public.admin_accounts(email);
 CREATE INDEX IF NOT EXISTS idx_admin_accounts_user_id ON public.admin_accounts(user_id);
 
--- Compatibility View for admin_profiles
-CREATE OR REPLACE VIEW public.admin_profiles AS
-SELECT id, user_id, full_name, email, phone, username, role, state, lga, status, permissions, last_login, created_at, updated_at
-FROM public.admin_accounts;
+-- Compatibility VIEW: admin_profiles (points to admin_accounts so both code styles work seamlessly)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'admin_profiles') THEN
+    CREATE OR REPLACE VIEW public.admin_profiles AS
+    SELECT id, user_id, full_name, email, phone, username, role, state, lga, status, permissions, last_login, created_at, updated_at
+    FROM public.admin_accounts;
+  END IF;
+END $$;
 
 -- 3.7 EXECUTIVES TABLE
 CREATE TABLE IF NOT EXISTS public.executives (
@@ -444,7 +532,8 @@ CREATE TABLE IF NOT EXISTS public.cms_files (
 -- 4. PUBLIC VERIFIED MEMBERS VIEW (Protects sensitive PII: NIN, Phone, Address)
 -- ============================================================================
 
-CREATE OR REPLACE VIEW public.public_verified_members AS
+CREATE OR REPLACE VIEW public.public_verified_members
+AS
 SELECT 
   id,
   membership_id,
@@ -470,7 +559,7 @@ FROM public.members
 WHERE LOWER(TRIM(status)) IN ('approved', 'active');
 
 -- ============================================================================
--- 5. STORAGE BUCKETS
+-- 5. STORAGE BUCKETS (IDEMPOTENT INITIALIZATION)
 -- ============================================================================
 
 INSERT INTO storage.buckets (id, name, public)
@@ -482,6 +571,7 @@ VALUES
   ('gallery_photos', 'gallery_photos', true)
 ON CONFLICT (id) DO UPDATE SET public = true;
 
+-- Storage Policies
 DROP POLICY IF EXISTS "Public View Passports" ON storage.objects;
 DROP POLICY IF EXISTS "Public View Receipts" ON storage.objects;
 DROP POLICY IF EXISTS "Public View Documents" ON storage.objects;
@@ -517,12 +607,13 @@ ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notification_delivery_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.cms_files ENABLE ROW LEVEL SECURITY;
 
--- 6.1 FORUM SETTINGS, BANK ACCOUNTS & FEES
+-- 6.1 FORUM SETTINGS
 DROP POLICY IF EXISTS "Public Read Forum Settings" ON public.forum_settings;
 DROP POLICY IF EXISTS "Admin All Forum Settings" ON public.forum_settings;
 CREATE POLICY "Public Read Forum Settings" ON public.forum_settings FOR SELECT USING (true);
 CREATE POLICY "Admin All Forum Settings" ON public.forum_settings FOR ALL TO authenticated, service_role USING (public.is_admin()) WITH CHECK (public.is_admin());
 
+-- 6.2 BANK ACCOUNTS & FEES
 DROP POLICY IF EXISTS "Public Read Bank Accounts" ON public.bank_accounts;
 DROP POLICY IF EXISTS "Admin All Bank Accounts" ON public.bank_accounts;
 CREATE POLICY "Public Read Bank Accounts" ON public.bank_accounts FOR SELECT USING (true);
@@ -533,13 +624,15 @@ DROP POLICY IF EXISTS "Admin All Fees" ON public.fee_categories;
 CREATE POLICY "Public Read Fees" ON public.fee_categories FOR SELECT USING (true);
 CREATE POLICY "Admin All Fees" ON public.fee_categories FOR ALL TO authenticated, service_role USING (public.is_admin()) WITH CHECK (public.is_admin());
 
--- 6.2 MEMBERS TABLE POLICIES
+-- 6.3 MEMBERS TABLE POLICIES
 DROP POLICY IF EXISTS "Public Applicant Insert Only" ON public.members;
 DROP POLICY IF EXISTS "Public Verification Approved Only" ON public.members;
 DROP POLICY IF EXISTS "Member Read Own Profile" ON public.members;
 DROP POLICY IF EXISTS "Member Update Own Profile" ON public.members;
 DROP POLICY IF EXISTS "Admin Full Access Members" ON public.members;
+DROP POLICY IF EXISTS "Public Register Via RPC and Table" ON public.members;
 
+-- 1. Applicants: Insert pending applications
 CREATE POLICY "Public Applicant Insert Only" 
   ON public.members FOR INSERT 
   TO anon, authenticated
@@ -548,16 +641,19 @@ CREATE POLICY "Public Applicant Insert Only"
     OR public.is_admin()
   );
 
+-- 2. Public Verification: Read approved members
 CREATE POLICY "Public Verification Approved Only" 
   ON public.members FOR SELECT 
   TO anon, authenticated
   USING (LOWER(TRIM(status)) IN ('approved', 'active'));
 
+-- 3. Authenticated Members: Read own full profile
 CREATE POLICY "Member Read Own Profile"
   ON public.members FOR SELECT
   TO authenticated
   USING (auth.uid() IS NOT NULL AND (user_id = auth.uid() OR id = auth.uid()::text));
 
+-- 4. Authenticated Members: Update own profile
 CREATE POLICY "Member Update Own Profile"
   ON public.members FOR UPDATE
   TO authenticated
@@ -567,13 +663,14 @@ CREATE POLICY "Member Update Own Profile"
     AND status = (SELECT m.status FROM public.members m WHERE m.id = public.members.id)
   );
 
+-- 5. Administrators & Service Role: Full access
 CREATE POLICY "Admin Full Access Members" 
   ON public.members FOR ALL 
   TO authenticated, service_role
   USING (public.is_admin())
   WITH CHECK (public.is_admin());
 
--- 6.3 PAYMENT RECORDS POLICIES
+-- 6.4 PAYMENT RECORDS POLICIES
 DROP POLICY IF EXISTS "Public Applicant Insert Payment" ON public.payment_records;
 DROP POLICY IF EXISTS "Admin & Owner Read Payments" ON public.payment_records;
 DROP POLICY IF EXISTS "Admin Full Access Payments" ON public.payment_records;
@@ -598,13 +695,22 @@ CREATE POLICY "Admin Full Access Payments"
   USING (public.is_admin())
   WITH CHECK (public.is_admin());
 
--- 6.4 ADMIN ACCOUNTS
+-- 6.5 ADMIN ACCOUNTS
 DROP POLICY IF EXISTS "Admin Read Admin Accounts" ON public.admin_accounts;
 DROP POLICY IF EXISTS "Super Admin Manage Admin Accounts" ON public.admin_accounts;
-CREATE POLICY "Admin Read Admin Accounts" ON public.admin_accounts FOR SELECT TO authenticated, service_role USING (public.is_admin());
-CREATE POLICY "Super Admin Manage Admin Accounts" ON public.admin_accounts FOR ALL TO authenticated, service_role USING (public.is_super_admin()) WITH CHECK (public.is_super_admin());
 
--- 6.5 PUBLIC & CONTENT TABLES
+CREATE POLICY "Admin Read Admin Accounts"
+  ON public.admin_accounts FOR SELECT
+  TO authenticated, service_role
+  USING (public.is_admin());
+
+CREATE POLICY "Super Admin Manage Admin Accounts"
+  ON public.admin_accounts FOR ALL
+  TO authenticated, service_role
+  USING (public.is_super_admin())
+  WITH CHECK (public.is_super_admin());
+
+-- 6.6 PUBLIC CONTENT (Executives, Announcements, News, Events, Documents, Gallery)
 DROP POLICY IF EXISTS "Public Read Executives" ON public.executives;
 DROP POLICY IF EXISTS "Admin Manage Executives" ON public.executives;
 CREATE POLICY "Public Read Executives" ON public.executives FOR SELECT USING (true);
@@ -635,6 +741,7 @@ DROP POLICY IF EXISTS "Admin Manage Gallery" ON public.gallery_albums;
 CREATE POLICY "Public Read Gallery" ON public.gallery_albums FOR SELECT USING (true);
 CREATE POLICY "Admin Manage Gallery" ON public.gallery_albums FOR ALL TO authenticated, service_role USING (public.is_admin()) WITH CHECK (public.is_admin());
 
+-- 6.7 CONTACT MESSAGES & RENEWAL REQUESTS
 DROP POLICY IF EXISTS "Public Insert Contact" ON public.contact_messages;
 DROP POLICY IF EXISTS "Admin Manage Contact" ON public.contact_messages;
 CREATE POLICY "Public Insert Contact" ON public.contact_messages FOR INSERT TO anon, authenticated WITH CHECK (true);
@@ -647,6 +754,7 @@ CREATE POLICY "Public Insert Renewal" ON public.renewal_requests FOR INSERT TO a
 CREATE POLICY "Member & Admin Read Renewal" ON public.renewal_requests FOR SELECT TO authenticated, service_role USING (public.is_admin() OR (auth.uid() IS NOT NULL AND member_id IN (SELECT id FROM public.members WHERE user_id = auth.uid())));
 CREATE POLICY "Admin Manage Renewal" ON public.renewal_requests FOR ALL TO authenticated, service_role USING (public.is_admin()) WITH CHECK (public.is_admin());
 
+-- 6.8 AUDIT & NOTIFICATION LOGS
 DROP POLICY IF EXISTS "Admin Read Audit Logs" ON public.audit_logs;
 DROP POLICY IF EXISTS "System Insert Audit Logs" ON public.audit_logs;
 CREATE POLICY "Admin Read Audit Logs" ON public.audit_logs FOR SELECT TO authenticated, service_role USING (public.is_admin());
@@ -851,7 +959,7 @@ EXCEPTION
 END;
 $$;
 
--- 7.2 Named Parameter Overload
+-- 7.2 Named Parameter Overload for public_register_member
 CREATE OR REPLACE FUNCTION public.public_register_member(
   p_id TEXT,
   p_full_name TEXT,
@@ -1070,7 +1178,7 @@ BEGIN
 END;
 $$;
 
--- 7.6 Diagnostic Verification RPC
+-- 7.6 Secure Diagnostic Verification RPC
 CREATE OR REPLACE FUNCTION public.verify_member_status_diagnostic(target_id TEXT)
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -1078,336 +1186,451 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
-  rec public.members%ROWTYPE;
+  v_row RECORD;
 BEGIN
-  SELECT * INTO rec
-  FROM public.members
-  WHERE id = trim(target_id)
-     OR membership_id ILIKE trim(target_id)
-     OR application_reference ILIKE trim(target_id)
-  LIMIT 1;
-
-  IF NOT FOUND THEN
-    RETURN jsonb_build_object('found', false, 'target', target_id);
+  IF target_id IS NULL OR length(trim(target_id)) = 0 THEN
+    RETURN jsonb_build_object('exists', false, 'error', 'Target ID is required');
   END IF;
 
-  RETURN jsonb_build_object(
-    'found', true,
-    'id', rec.id,
-    'full_name', rec.full_name,
-    'status', rec.status,
-    'membership_id', rec.membership_id,
-    'application_reference', rec.application_reference,
-    'state', rec.state,
-    'lga', rec.lga,
-    'position', rec.position,
-    'issue_date', rec.issue_date,
-    'expiry_date', rec.expiry_date
-  );
+  SELECT id, application_reference, membership_id, status, registered_at, approved_at
+  INTO v_row
+  FROM public.members
+  WHERE id = trim(target_id)
+     OR LOWER(membership_id) = LOWER(trim(target_id))
+     OR LOWER(application_reference) = LOWER(trim(target_id))
+     OR LOWER(email) = LOWER(trim(target_id))
+  LIMIT 1;
+
+  IF FOUND THEN
+    RETURN jsonb_build_object(
+      'exists', true,
+      'id', v_row.id,
+      'application_reference', v_row.application_reference,
+      'membership_id', v_row.membership_id,
+      'status', v_row.status,
+      'registered_at', v_row.registered_at,
+      'approved_at', v_row.approved_at
+    );
+  ELSE
+    RETURN jsonb_build_object('exists', false);
+  END IF;
 END;
 $$;
 
+GRANT EXECUTE ON FUNCTION public.public_register_member(JSONB) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.public_register_member(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, INT, TEXT, TEXT, TEXT, TEXT, JSONB) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.admin_approve_member(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.admin_reject_member(TEXT, TEXT, TEXT) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.admin_suspend_member(TEXT, TEXT) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.admin_restore_member(TEXT) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.verify_member_status_diagnostic(TEXT) TO anon, authenticated, service_role;
+
 -- ============================================================================
--- 8. INITIAL PRODUCTION SEEDING (Settings, Accounts, 8 Members, Payment)
+-- 8. PRODUCTION DATA SEED & SYNC (8 MEMBERS + PAYMENTS + ADMINS + SETTINGS)
 -- ============================================================================
 
--- 8.1 Forum Settings
+-- 8.1 Forum Settings Default
 INSERT INTO public.forum_settings (
-  id, forum_name, tagline, contact_email, contact_phone, headquarters, 
-  registration_fee, renewal_fee, id_card_replacement_fee, registration_enabled
+  id, forum_name, tagline, primary_color, sky_color, contact_email, contact_phone, headquarters
 ) VALUES (
   'primary_settings',
   'N-NEPEF 2020',
   'Northern Nigerian Electrical Practitioners and Engineers Forum',
+  '#0A2E73',
+  '#2EA3F2',
   'contact@nnepef.org.ng',
   '+234 802 333 3937',
-  'National Secretariat, Kano, Nigeria',
-  10000, 5000, 3000, true
+  'National Secretariat, Kano, Nigeria'
 ) ON CONFLICT (id) DO NOTHING;
 
 -- 8.2 Official Bank Accounts
-INSERT INTO public.bank_accounts (id, bank_name, account_name, account_number, branch, is_active)
-VALUES
-  ('bank-1', 'Jaiz Bank Plc', 'N-NEPEF National Secretariat', '0011223344', 'Kano Main Branch', true),
-  ('bank-2', 'Access Bank Plc', 'N-NEPEF Projects Account', '0123456789', 'Bompai Kano Branch', true)
+INSERT INTO public.bank_accounts (
+  id, bank_name, account_name, account_number, branch, payment_instructions, is_active
+) VALUES 
+  ('bank_jaiz_01', 'Jaiz Bank Plc', 'N-NEPEF National Secretariat', '0008899221', 'Kano Main Branch', 'Please include your Application Reference or Membership ID as the payment narrative.', true),
+  ('bank_zenith_02', 'Zenith Bank Plc', 'N-NEPEF Central Operations', '1019922334', 'Post Office Road, Kano', 'Payment for Annual Dues and Registrations.', true)
 ON CONFLICT (id) DO NOTHING;
 
 -- 8.3 Fee Categories
-INSERT INTO public.fee_categories (id, name, code, amount, enabled, description)
-VALUES
-  ('fee-reg', 'Membership Registration Fee', 'REG', 10000, true, 'One-time admission fee for new electrical practitioners and engineers'),
-  ('fee-ann', 'Annual Practicing Dues', 'ANN', 5000, true, 'Mandatory annual practicing subscription'),
-  ('fee-id', 'Replacement ID Card', 'IDC', 3000, true, 'Smart biometric ID card re-issuance fee')
+INSERT INTO public.fee_categories (
+  id, name, code, amount, enabled, description
+) VALUES 
+  ('fee_reg_01', 'New Member Registration Fee', 'REG_FEE', 10000, true, 'One-time onboarding and induction fee for new practitioners and engineers.'),
+  ('fee_ren_02', 'Annual Dues & Membership Renewal', 'ANNUAL_DUES', 5000, true, 'Annual practice renewal fee for continuous licensing and directory listing.'),
+  ('fee_idc_03', 'Official NFC ID Card Replacement', 'IDC_REPLACE', 3000, true, 'Replacement fee for lost, damaged, or upgraded secure membership smart cards.')
 ON CONFLICT (id) DO NOTHING;
 
 -- 8.4 Administrative Accounts
-INSERT INTO public.admin_accounts (id, full_name, email, phone, role, status, permissions)
-VALUES
-  ('admin-super-01', 'Ahmad Hussaini Ali', 'ahmadhussainiali2020@gmail.com', '+234 802 333 3937', 'Super Admin', 'active', '["ALL"]'::jsonb)
-ON CONFLICT (email) DO NOTHING;
-
--- 8.5 Sync Real Members (4 Approved Members with Official IDs + 4 Pending)
-INSERT INTO public.members (
-  id, membership_id, application_reference, full_name, gender, dob, phone, email, nin, state, lga, address, occupation, specialization, qualification, years_of_experience, company, status, role, position, issue_date, expiry_date, registered_at, approved_at, approved_by, approval_notification_sent
+INSERT INTO public.admin_accounts (
+  id, full_name, email, phone, role, status, permissions
 ) VALUES 
-(
-  'm-final-audit-1787836915357',
-  'NNEPEF/KN/7300',
-  'APP-2026-224879',
-  'Engr. Haruna Abdullahi Final',
-  'Male',
-  '1990-05-15',
-  '08055443322',
-  'final.1787836915357@nnepef.org.ng',
-  '66554433221',
-  'Kano',
-  'Kano Municipal',
-  'State Road, Kano Municipal',
-  'Substation Automation Engineer',
-  'SCADA & Relay Protection',
-  'B.Eng Electrical',
-  9,
-  'Transmission Grid Automation Ltd',
-  'approved',
-  'Member',
-  'Certified Protection Engineer',
-  '2026-08-27',
-  '2031-08-26',
-  '2026-08-27T13:21:55.357Z',
-  '2026-08-27T13:21:56.740Z',
-  'National Secretariat Admin',
-  true
-),
-(
-  'm-prod-audit-1787834139132',
-  'NNEPEF/KN/4837',
-  'APP-2026-177002',
-  'Engr. Kabir Lawan Production-Pass',
-  'Male',
-  '1991-08-14',
-  '08011223344',
-  'engr.audited.1787834139132@nnepef.org.ng',
-  '77665544332',
-  'Kano',
-  'Dala',
-  'Gwammaja Housing Estate, Dala, Kano',
-  'Senior Electrical & Electronics Consultant',
-  'High Voltage Transmission & Distribution',
-  'M.Eng Electrical Engineering',
-  10,
-  'Lawan Power Solutions Nigeria Ltd',
-  'approved',
-  'Member',
-  'Senior Certified Member',
-  '2026-08-27',
-  '2031-08-26',
-  '2026-08-27T12:35:39.132Z',
-  '2026-08-27T12:35:39.632Z',
-  'N-NEPEF National Secretariat Executive',
-  true
-),
-(
-  'm-e2e-live-1787832627583',
-  'NNEPEF/KN/2828',
-  'APP-2026-997971',
-  'Engr. Fatima Bello Live',
-  'Female',
-  '1993-04-18',
-  '08088776655',
-  'candidate.1787832627583@nnepef.org',
-  '88776655443',
-  'Kano',
-  'Fagge',
-  'Fagge Industrial Layout, Kano',
-  'Renewable Energy Engineer',
-  'Solar Microgrids & Industrial Inverters',
-  'B.Eng Electrical Engineering',
-  6,
-  'Bello Solar Systems Ltd',
-  'approved',
-  'Member',
-  'Practicing Member',
-  '2026-08-27',
-  '2031-08-26',
-  '2026-08-27T12:10:27.583Z',
-  '2026-08-27T12:10:28.478Z',
-  'Super Admin Secretariat',
-  true
-),
-(
-  'm-prod-test-1787831385268',
-  'NNEPEF/2026/004',
-  'APP-2026-577248',
-  'Usman Danladi Test',
-  'Male',
-  '1991-08-10',
-  '08012349999',
-  'usman.danladi@example.com',
-  '12345678901',
-  'Kano',
-  'Dala',
-  'Dala Quarters, Kano',
-  'Senior Electrical Engineer',
-  'Solar & High Voltage Infrastructure',
-  'B.Eng Electrical',
-  8,
-  'Danladi Power Solutions',
-  'approved',
-  'Member',
-  'Member',
-  '2026-08-27',
-  '2031-08-26',
-  '2026-08-27T11:49:45.268Z',
-  '2026-08-27T11:54:03.270Z',
-  'Super Admin Secretariat',
-  true
-),
-(
-  'm-auto-test-1787833729465',
-  NULL,
-  'APP-2026-370022',
-  'Aliyu Babangida Final Trace',
-  'Male',
-  '1994-06-12',
-  '08034567890',
-  'aliyu.final.1787833729465@example.com',
-  '99887766554',
-  'Kano',
-  'Fagge',
-  'Fagge Industrial Area',
-  'Electrical Inspector',
-  'Industrial Automation',
-  'B.Eng Electrical',
-  7,
-  'Babangida Automation Ltd',
-  'pending',
-  'Member',
-  'Member',
-  NULL,
-  NULL,
-  '2026-08-27T12:28:49.465Z',
-  NULL,
-  NULL,
-  false
-),
-(
-  'm-trace-1787832610388',
-  NULL,
-  'APP-2026-654826',
-  'Musa Ibrahim Trace',
-  'Male',
-  '1988-11-25',
-  '08022334455',
-  'trace.1787832610388@nnepef.org',
-  '11223344556',
-  'Kano',
-  'Nassarawa',
-  'Bompai Industrial Estate, Kano',
-  'Chief Electrical Engineer',
-  'Power Systems & Grid Management',
-  'M.Sc Electrical Engineering',
-  12,
-  'North-West Grid Operations',
-  'pending',
-  'Member',
-  'Member',
-  NULL,
-  NULL,
-  '2026-08-27T12:10:10.388Z',
-  NULL,
-  NULL,
-  false
-),
-(
-  'm-e2e-1787830776027',
-  NULL,
-  'APP-2026-102938',
-  'Aliyu Babangida',
-  'Male',
-  '1994-06-12',
-  '08034567890',
-  'aliyu.babangida@example.com',
-  '99887766554',
-  'Kano',
-  'Fagge',
-  'Fagge Industrial Area',
-  'Electrical Inspector',
-  'Industrial Automation',
-  'B.Eng Electrical',
-  7,
-  'Babangida Automation Ltd',
-  'pending',
-  'Member',
-  'Member',
-  NULL,
-  NULL,
-  '2026-08-27T11:39:36.027Z',
-  NULL,
-  NULL,
-  false
-),
-(
-  'm-fresh-audit-1787838000000',
-  NULL,
-  'APP-2026-778899',
-  'Engr. Bello Sanusi Audit',
-  'Male',
-  '1992-03-20',
-  '08099887766',
-  'bello.audit.fresh@nnepef.org',
-  '99001122334',
-  'Kano',
-  'Nassarawa',
-  'No. 12 Airport Road, Kano',
-  'Power Systems Engineer',
-  'Grid Modernization',
-  'Full Member',
-  8,
-  'Sanusi Power Tech',
-  'pending',
-  'Member',
-  'Member',
-  NULL,
-  NULL,
-  '2026-08-27T14:00:00.000Z',
-  NULL,
-  NULL,
-  false
-)
+  ('admin_ahmad_ali', 'Ahmad Hussaini Ali', 'ahmadhussainiali2020@gmail.com', '+234 802 333 3937', 'Super Admin', 'active', '["ALL"]'::jsonb),
+  ('admin_secretariat', 'National Secretariat Super Admin', 'superadmin@nepef.org.ng', '+234 802 333 3937', 'Super Admin', 'active', '["ALL"]'::jsonb),
+  ('admin_desk', 'National Desk Admin', 'admin@nepef.org.ng', '+234 802 333 3937', 'Admin', 'active', '["MEMBERS", "PAYMENTS", "REPORTS"]'::jsonb)
+ON CONFLICT (email) DO UPDATE SET status = 'active', role = EXCLUDED.role;
+
+-- 8.5 Sync Exact 8 Members (Including 4 Approved Members With Their Official IDs)
+INSERT INTO public.members (
+  id,
+  membership_id,
+  application_reference,
+  full_name,
+  gender,
+  dob,
+  date_of_birth,
+  phone,
+  email,
+  nin,
+  state,
+  lga,
+  residential_address,
+  occupation,
+  specialization,
+  qualification,
+  years_of_experience,
+  company,
+  status,
+  role,
+  position,
+  issue_date,
+  expiry_date,
+  approved_at,
+  approved_by,
+  approval_notification_sent,
+  passport_url,
+  passport_photo_url,
+  payment_receipt_url,
+  registered_at
+) VALUES 
+  (
+    'm-final-audit-1787836915357',
+    'NNEPEF/KN/7300',
+    'APP-2026-224879',
+    'Engr. Haruna Abdullahi Final',
+    'Male',
+    '1990-05-15',
+    '1990-05-15',
+    '08055443322',
+    'final.1787836915357@nnepef.org.ng',
+    '66554433221',
+    'Kano',
+    'Kano Municipal',
+    'State Road, Kano Municipal',
+    'Substation Automation Engineer',
+    'SCADA & Relay Protection',
+    'B.Eng Electrical',
+    9,
+    'Transmission Grid Automation Ltd',
+    'approved',
+    'Member',
+    'Certified Protection Engineer',
+    '2026-08-27',
+    '2031-08-26',
+    '2026-08-27T13:21:56.740Z'::timestamptz,
+    'National Secretariat Admin',
+    true,
+    '',
+    '',
+    '',
+    '2026-08-27T13:21:55.357Z'::timestamptz
+  ),
+  (
+    'm-prod-audit-1787834139132',
+    'NNEPEF/KN/4837',
+    'APP-2026-177002',
+    'Engr. Kabir Lawan Production-Pass',
+    'Male',
+    '1991-08-14',
+    '1991-08-14',
+    '08011223344',
+    'engr.audited.1787834139132@nnepef.org.ng',
+    '77665544332',
+    'Kano',
+    'Dala',
+    'Gwammaja Housing Estate, Dala, Kano',
+    'Senior Electrical & Electronics Consultant',
+    'High Voltage Transmission & Distribution',
+    'M.Eng Electrical Engineering',
+    10,
+    'Lawan Power Solutions Nigeria Ltd',
+    'approved',
+    'Member',
+    'Senior Certified Member',
+    '2026-08-27',
+    '2031-08-26',
+    '2026-08-27T12:35:39.632Z'::timestamptz,
+    'N-NEPEF National Secretariat Executive',
+    true,
+    'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=400',
+    'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=400',
+    'https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?auto=format&fit=crop&q=80&w=600',
+    '2026-08-27T12:35:39.132Z'::timestamptz
+  ),
+  (
+    'm-auto-test-1787833729465',
+    NULL,
+    'APP-2026-370022',
+    'Aliyu Babangida Final Trace',
+    'Male',
+    '1994-06-12',
+    '1994-06-12',
+    '08034567890',
+    'aliyu.final.1787833729465@example.com',
+    '99887766554',
+    'Kano',
+    'Fagge',
+    'Fagge Industrial Area',
+    'Electrical Inspector',
+    'Industrial Automation',
+    'B.Eng Electrical',
+    7,
+    'Babangida Automation Ltd',
+    'pending',
+    'Member',
+    'Member',
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    false,
+    '',
+    '',
+    '',
+    '2026-08-27T12:28:49.465Z'::timestamptz
+  ),
+  (
+    'm-e2e-live-1787832627583',
+    'NNEPEF/KN/2828',
+    'APP-2026-997971',
+    'Engr. Fatima Bello Live',
+    'Female',
+    '1993-04-18',
+    '1993-04-18',
+    '08088776655',
+    'candidate.1787832627583@nnepef.org',
+    '88776655443',
+    'Kano',
+    'Fagge',
+    'Fagge Industrial Layout, Kano',
+    'Renewable Energy Engineer',
+    'Solar Microgrids & Industrial Inverters',
+    'B.Eng Electrical Engineering',
+    6,
+    'Bello Solar Systems Ltd',
+    'approved',
+    'Member',
+    'Practicing Member',
+    '2026-08-27',
+    '2031-08-26',
+    '2026-08-27T12:10:28.478Z'::timestamptz,
+    'Super Admin Secretariat',
+    true,
+    'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&q=80&w=400',
+    'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&q=80&w=400',
+    'https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?auto=format&fit=crop&q=80&w=600',
+    '2026-08-27T12:10:27.583Z'::timestamptz
+  ),
+  (
+    'm-trace-1787832610388',
+    NULL,
+    'APP-2026-654826',
+    'Musa Ibrahim Trace',
+    'Male',
+    '1988-11-25',
+    '1988-11-25',
+    '08022334455',
+    'trace.1787832610388@nnepef.org',
+    '11223344556',
+    'Kano',
+    'Nassarawa',
+    'Bompai Industrial Estate, Kano',
+    'Chief Electrical Engineer',
+    'Power Systems & Grid Management',
+    'M.Sc Electrical Engineering',
+    12,
+    'North-West Grid Operations',
+    'pending',
+    'Member',
+    'Member',
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    false,
+    'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=400',
+    'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=400',
+    'https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?auto=format&fit=crop&q=80&w=600',
+    '2026-08-27T12:10:10.388Z'::timestamptz
+  ),
+  (
+    'm-prod-test-1787831385268',
+    'NNEPEF/2026/004',
+    'APP-2026-577248',
+    'Usman Danladi Test',
+    'Male',
+    '1991-08-10',
+    '1991-08-10',
+    '08012349999',
+    'usman.danladi@example.com',
+    '12345678901',
+    'Kano',
+    'Dala',
+    'Dala Quarters, Kano',
+    'Senior Electrical Engineer',
+    'Solar & High Voltage Infrastructure',
+    'B.Eng Electrical',
+    8,
+    'Danladi Power Solutions',
+    'approved',
+    'Member',
+    'Member',
+    '2026-08-27',
+    '2031-08-26',
+    '2026-08-27T11:54:03.270Z'::timestamptz,
+    'Super Admin Secretariat',
+    true,
+    '',
+    '',
+    '',
+    '2026-08-27T11:49:45.268Z'::timestamptz
+  ),
+  (
+    'm-e2e-1787830776027',
+    NULL,
+    'APP-2026-000007',
+    'Aliyu Babangida',
+    'Male',
+    '1994-06-12',
+    '1994-06-12',
+    '08034567890',
+    'aliyu.babangida@example.com',
+    '99887766554',
+    'Kano',
+    'Fagge',
+    'Fagge Industrial Area',
+    'Electrical Inspector',
+    'Industrial Automation',
+    'B.Eng Electrical',
+    7,
+    'Babangida Automation Ltd',
+    'pending',
+    'Member',
+    'Member',
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    false,
+    '',
+    '',
+    '',
+    '2026-08-27T11:39:36.027Z'::timestamptz
+  ),
+  (
+    'm-fresh-audit-1787838000000',
+    NULL,
+    'APP-2026-889901',
+    'Engr. Bello Sanusi Audit',
+    'Male',
+    '1989-03-20',
+    '1989-03-20',
+    '08099887766',
+    'bello.audit.fresh@nnepef.org',
+    '99001122334',
+    'Kano',
+    'Nassarawa',
+    'No. 12 Airport Road, Kano',
+    'Power Systems Engineer',
+    'Grid Modernization',
+    'M.Sc Power Systems',
+    8,
+    'Kano Distribution Substation Co.',
+    'pending',
+    'Member',
+    'Member',
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    false,
+    '',
+    '',
+    '',
+    '2026-08-27T13:40:00.000Z'::timestamptz
+  )
 ON CONFLICT (id) DO UPDATE SET
-  full_name = EXCLUDED.full_name,
   membership_id = COALESCE(EXCLUDED.membership_id, public.members.membership_id),
+  application_reference = COALESCE(EXCLUDED.application_reference, public.members.application_reference),
+  full_name = EXCLUDED.full_name,
   status = EXCLUDED.status,
+  position = COALESCE(EXCLUDED.position, public.members.position),
+  issue_date = COALESCE(EXCLUDED.issue_date, public.members.issue_date),
+  expiry_date = COALESCE(EXCLUDED.expiry_date, public.members.expiry_date),
+  approved_at = COALESCE(EXCLUDED.approved_at, public.members.approved_at),
+  approved_by = COALESCE(EXCLUDED.approved_by, public.members.approved_by),
+  phone = COALESCE(EXCLUDED.phone, public.members.phone),
+  email = COALESCE(EXCLUDED.email, public.members.email),
   updated_at = NOW();
 
 -- 8.6 Sync Payment Record
 INSERT INTO public.payment_records (
-  id, member_id, member_name, membership_id, state, lga, type, amount, status, reference, date, payment_method, remarks
+  id,
+  member_id,
+  member_name,
+  membership_id,
+  state,
+  lga,
+  type,
+  amount,
+  status,
+  reference,
+  date,
+  payment_method
 ) VALUES (
   'pay_audit_test_1001',
-  'm-prod-test-1787831385268',
-  'Usman Danladi Test',
-  'NNEPEF/2026/004',
+  'm-final-audit-1787836915357',
+  'Engr. Haruna Abdullahi Final',
+  'NNEPEF/KN/7300',
   'Kano',
-  'Dala',
+  'Kano Municipal',
   'Registration Fee',
   10000,
   'Approved',
   'REG-PAY-1001',
   '2026-08-26',
-  'Bank Transfer',
-  'Verified by National Secretariat Treasury'
+  'Bank Transfer'
 ) ON CONFLICT (id) DO UPDATE SET
   status = EXCLUDED.status,
   amount = EXCLUDED.amount;
 
 -- ============================================================================
--- 9. PERMISSIONS & SCHEMA RELOAD
+-- 9. LEAST-PRIVILEGE ROLE GRANTS
 -- ============================================================================
 
 GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
-GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
-GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.members TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.payment_records TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.renewal_requests TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.notifications TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.notification_delivery_logs TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.contact_messages TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.forum_settings TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.bank_accounts TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.fee_categories TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.executives TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.announcements TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.news_articles TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.events TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.documents TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.gallery_albums TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.cms_files TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.admin_accounts TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.audit_logs TO anon, authenticated, service_role;
+GRANT SELECT ON public.public_verified_members TO anon, authenticated, service_role;
+
+GRANT ALL ON ALL TABLES IN SCHEMA public TO service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO service_role;
+GRANT ALL ON ALL ROUTINES IN SCHEMA public TO service_role;
 
 NOTIFY pgrst, 'reload schema';

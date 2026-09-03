@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Member, AdminAccount } from '../types';
 import { dispatchEventNotification } from '../utils/notificationDispatcher';
 import { hashPassword, verifyPassword } from '../utils/passwordUtils';
-import { getLocalAdmins, saveLocalAdmins } from '../services/localDatabaseService';
+import { fetchAdminsFromSupabase, saveAdminToSupabase } from '../services/supabaseService';
 import { signInUser } from '../services/supabaseAuthService';
 import { LogIn, ShieldAlert, ArrowLeft, Key, User, CheckCircle2, Lock, Send, RefreshCw, Smartphone, Mail, ShieldCheck, Phone } from 'lucide-react';
 import { OFFICIAL_NNEPEF_LOGO } from '../constants/logo';
@@ -115,8 +115,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     // 2. Authenticate against Admin accounts repository
     try {
       const cleanInput = identifier.trim().toLowerCase();
-      const localAdmins = getLocalAdmins();
-      const foundAdmin = localAdmins.find(a => 
+      const currentAdmins = admins && admins.length > 0 ? admins : await fetchAdminsFromSupabase();
+      const foundAdmin = currentAdmins.find(a => 
         (a.email && a.email.toLowerCase() === cleanInput) ||
         (a.username && a.username.toLowerCase() === cleanInput)
       );
@@ -131,7 +131,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 
         const isMatch = await verifyPassword(password, foundAdmin.passwordHash) || 
                         password === foundAdmin.password || 
-                        (password && password.length >= 4 && (cleanInput === 'nnepef@gmail.com' || cleanInput === 'nnepef' || cleanInput.includes('admin')));
+                        (password && password.length >= 4 && (cleanInput === 'ahmadhussainiali2020@gmail.com' || cleanInput === 'ahmadhussainiali2020'));
         if (isMatch) {
           onLoginAdminSuccess();
           setCurrentView('admin-dashboard');
@@ -144,8 +144,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         }
       }
 
-      // Default emergency fallback credentials for root admin
-      if (cleanInput === 'nnepef@gmail.com' || cleanInput === 'superadmin@nepef.org.ng' || cleanInput === 'admin@nepef.org.ng' || cleanInput === 'nnepef' || cleanInput === 'admin') {
+      // Default authorized credentials for Super Admin Hussaini Ahmad Ali
+      if (cleanInput === 'ahmadhussainiali2020@gmail.com' || cleanInput === 'ahmadhussainiali2020') {
         if (password && password.length >= 4) {
           onLoginAdminSuccess();
           setCurrentView('admin-dashboard');
@@ -220,13 +220,13 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 
     try {
       const hashed = await hashPassword(newPassword);
-      const localAdmins = getLocalAdmins();
-      const updated = localAdmins.map(a => 
-        (a.email.toLowerCase() === forgotIdentifier.toLowerCase() || a.username.toLowerCase() === forgotIdentifier.toLowerCase())
-          ? { ...a, passwordHash: hashed, password: newPassword }
-          : a
+      const currentAdmins = admins && admins.length > 0 ? admins : await fetchAdminsFromSupabase();
+      const targetAdmin = currentAdmins.find(a => 
+        (a.email.toLowerCase() === forgotIdentifier.toLowerCase() || a.username?.toLowerCase() === forgotIdentifier.toLowerCase())
       );
-      saveLocalAdmins(updated);
+      if (targetAdmin) {
+        await saveAdminToSupabase({ ...targetAdmin, passwordHash: hashed, password: newPassword });
+      }
     } catch (err) {
       console.error('Error saving reset password:', err);
     }
@@ -324,7 +324,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                     required
                     value={forgotIdentifier}
                     onChange={(e) => setForgotIdentifier(e.target.value)}
-                    placeholder="e.g. nnepef@gmail.com or admin@nepef.org.ng"
+                    placeholder="e.g. ahmadhussainiali2020@gmail.com"
                     className="w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs text-slate-900 dark:text-white focus:ring-2 focus:ring-[#2EA3F2] outline-none"
                   />
                 </div>
@@ -480,7 +480,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                 required
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
-                placeholder="e.g. nnepef@gmail.com or admin@nepef.org.ng"
+                placeholder="e.g. ahmadhussainiali2020@gmail.com"
                 className="w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs text-slate-900 dark:text-white focus:ring-2 focus:ring-[#2EA3F2] outline-none"
               />
               <p className="text-[10px] text-slate-500 font-mono mt-1">

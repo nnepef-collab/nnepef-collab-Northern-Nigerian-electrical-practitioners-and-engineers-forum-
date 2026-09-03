@@ -205,7 +205,7 @@ export const SupabaseEndToEndVerification: React.FC = () => {
 
       // Step 5: Admin Status UPDATE / Approval
       const t4 = performance.now();
-      const assignedMemId = `NEPEF/2020/KN/${Math.floor(100 + Math.random() * 900)}`;
+      const assignedMemId = `NNEPEF/KN/${String(Math.floor(100 + Math.random() * 900)).padStart(4, '0')}`;
       const updatedRecord: Member = {
         ...testMember,
         status: 'approved',
@@ -929,7 +929,7 @@ export const AdminDiagnosticsPanel: React.FC = () => {
           <div className="p-4 rounded-2xl bg-white/80 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
             <div className="text-[10px] uppercase tracking-wider font-extrabold text-slate-400">Highest Sequence / Next</div>
             <div className="text-sm font-bold text-slate-900 dark:text-white mt-1 font-mono">
-              #{diagnosticsData?.highestExistingMembershipNumber ?? 0} → {diagnosticsData?.nextGeneratedMembershipNumber ?? 'NNEPEF/2024/001'}
+              #{diagnosticsData?.highestExistingMembershipNumber ?? 0} → {diagnosticsData?.nextGeneratedMembershipNumber ?? 'NNEPEF/KN/0001'}
             </div>
             <div className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold mt-1">
               ✓ Supports 1,000+ Members

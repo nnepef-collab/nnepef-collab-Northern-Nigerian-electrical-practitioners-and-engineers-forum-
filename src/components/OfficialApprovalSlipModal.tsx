@@ -203,8 +203,8 @@ export const OfficialApprovalSlipModal: React.FC<OfficialApprovalSlipModalProps>
               <span className="font-semibold text-slate-800">{member.gender || '—'} / {member.dob || member.dateOfBirth || '—'}</span>
             </div>
             <div>
-              <span className="text-[9px] font-mono text-slate-500 uppercase block">National ID (NIN)</span>
-              <span className="font-mono font-semibold text-slate-800">{member.nin ? `${member.nin.substring(0, 4)}••••${member.nin.substring(member.nin.length - 3)}` : 'Verified'}</span>
+              <span className="text-[9px] font-mono text-slate-500 uppercase block">Chapter State</span>
+              <span className="font-semibold text-slate-800">{member.state || 'Kano'} State</span>
             </div>
             <div>
               <span className="text-[9px] font-mono text-slate-500 uppercase block">Approved Date</span>

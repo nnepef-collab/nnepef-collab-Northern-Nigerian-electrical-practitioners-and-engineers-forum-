@@ -548,10 +548,6 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
                 <span className="font-bold text-slate-900 dark:text-white">{currentUser.gender} • {currentUser.dob}</span>
               </div>
               <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
-                <span className="text-slate-500">National Identity Number (NIN):</span>
-                <span className="font-mono font-bold text-slate-900 dark:text-white">{currentUser.nin ? `•••• •••• ${currentUser.nin.slice(-4)}` : 'Verified'}</span>
-              </div>
-              <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
                 <span className="text-slate-500">Phone Number:</span>
                 <span className="font-bold text-slate-900 dark:text-white">{currentUser.phone}</span>
               </div>

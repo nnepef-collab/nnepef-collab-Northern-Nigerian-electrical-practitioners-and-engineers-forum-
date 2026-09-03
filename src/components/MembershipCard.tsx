@@ -89,7 +89,7 @@ export const MembershipCard: React.FC<MembershipCardProps> = ({ member, logoUrl 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const passportPhotoSrc = member.passportUrl || member.passportPhotoUrl || '';
-  const memberIdDisplay = member.membershipId || (member.applicationReference ? `REF-${member.applicationReference}` : 'NNEPEF/HQ/2026/MEMBER');
+  const memberIdDisplay = member.membershipId || (member.applicationReference ? `REF-${member.applicationReference}` : 'PENDING APPROVAL');
 
   const handlePrintCard = () => {
     try {

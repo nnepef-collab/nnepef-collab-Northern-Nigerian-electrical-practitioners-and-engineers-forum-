@@ -76,6 +76,7 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
   const [validationError, setValidationError] = useState<string | null>(null);
   const [copiedAccNum, setCopiedAccNum] = useState(false);
   const [copiedAccName, setCopiedAccName] = useState(false);
+  const [copiedRef, setCopiedRef] = useState(false);
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
 
   const initialForm = {
@@ -337,9 +338,28 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
                 {submittedMember.occupation} • {submittedMember.specialization}
               </p>
               <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 pt-1">
-                <span className="px-2.5 py-1 rounded-md text-xs font-mono font-bold bg-sky-50 dark:bg-sky-950 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800">
-                  Ref: {submittedMember.applicationReference || submittedMember.id}
-                </span>
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-mono font-bold bg-sky-50 dark:bg-sky-950 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800">
+                  <span>Ref: {submittedMember.applicationReference || submittedMember.id}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const refStr = submittedMember.applicationReference || submittedMember.id;
+                      navigator.clipboard.writeText(refStr).then(() => {
+                        setCopiedRef(true);
+                        setTimeout(() => setCopiedRef(false), 2500);
+                      });
+                    }}
+                    className="p-0.5 hover:bg-sky-200 dark:hover:bg-sky-900 rounded transition-colors text-sky-700 dark:text-sky-300 cursor-pointer"
+                    title="Kwafi Lambar Reference (Copy Ref)"
+                  >
+                    {copiedRef ? <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+                {copiedRef && (
+                  <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 animate-in fade-in">
+                    An Kwafa!
+                  </span>
+                )}
                 <span className="px-2.5 py-1 rounded-md text-xs font-bold bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 flex items-center gap-1">
                   <Clock className="w-3.5 h-3.5" />
                   Status: PENDING ADMIN APPROVAL

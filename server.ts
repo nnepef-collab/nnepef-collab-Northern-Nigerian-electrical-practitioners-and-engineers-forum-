@@ -415,6 +415,122 @@ async function startServer() {
     }
   });
 
+  // POST /api/members/verify-public - Secure dual-factor public member verification
+  app.post('/api/members/verify-public', async (req, res) => {
+    try {
+      const { membershipNumber, phoneNumber } = req.body;
+      const cleanId = String(membershipNumber || '').trim().toUpperCase();
+      const rawPhone = String(phoneNumber || '').trim();
+      const digitsOnlyPhone = rawPhone.replace(/\D/g, '');
+
+      if (!cleanId || !rawPhone || digitsOnlyPhone.length < 8) {
+        return res.status(400).json({
+          verified: false,
+          error: 'Both Official Membership ID and a valid Registered Phone Number are required.'
+        });
+      }
+
+      const effectiveKey = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_KEY;
+      if (SUPABASE_URL && effectiveKey) {
+        try {
+          const response = await fetch(
+            `${SUPABASE_URL}/rest/v1/members?membership_id=ilike.${encodeURIComponent(cleanId)}&select=id,membership_id,full_name,state,lga,occupation,specialization,membership_type,position,status,passport_url,passport_photo_url,issue_date,expiry_date,approved_at,registered_at,phone&limit=1`,
+            {
+              headers: {
+                'apikey': effectiveKey,
+                'Authorization': `Bearer ${effectiveKey}`
+              }
+            }
+          );
+
+          if (response.ok) {
+            const data = await response.json();
+            if (Array.isArray(data) && data.length > 0) {
+              const row = data[0];
+              const statusStr = (row.status || '').toLowerCase();
+              if (statusStr === 'approved' || statusStr === 'active') {
+                const dbPhoneDigits = String(row.phone || '').replace(/\D/g, '');
+                const inputSuffix = digitsOnlyPhone.slice(-8);
+                const dbSuffix = dbPhoneDigits.slice(-8);
+
+                if (inputSuffix && dbSuffix && inputSuffix === dbSuffix) {
+                  return res.json({
+                    verified: true,
+                    member: {
+                      id: row.id,
+                      membershipId: row.membership_id,
+                      fullName: row.full_name,
+                      state: row.state,
+                      lga: row.lga,
+                      occupation: row.occupation,
+                      specialization: row.specialization,
+                      membershipType: row.membership_type,
+                      position: row.position || 'Member',
+                      status: 'Approved & Certified',
+                      passportUrl: row.passport_url || row.passport_photo_url || '',
+                      issueDate: row.issue_date,
+                      expiryDate: row.expiry_date,
+                      approvedAt: row.approved_at,
+                      registeredAt: row.registered_at
+                    }
+                  });
+                }
+              }
+            }
+          }
+        } catch (supabaseErr) {
+          console.warn('[API /members/verify-public Supabase Error]:', supabaseErr);
+        }
+      }
+
+      // Check local cache
+      const stored = readStoredMembers();
+      const localMatch = stored.find(m => 
+        m.membershipId && m.membershipId.trim().toUpperCase() === cleanId
+      );
+
+      if (localMatch) {
+        const localStatus = (localMatch.status || '').toLowerCase();
+        if (localStatus === 'approved' || localStatus === 'active') {
+          const localPhoneDigits = String(localMatch.phone || '').replace(/\D/g, '');
+          const inputSuffix = digitsOnlyPhone.slice(-8);
+          const localSuffix = localPhoneDigits.slice(-8);
+
+          if (inputSuffix && localSuffix && inputSuffix === localSuffix) {
+            return res.json({
+              verified: true,
+              member: {
+                id: localMatch.id,
+                membershipId: localMatch.membershipId,
+                fullName: localMatch.fullName,
+                state: localMatch.state,
+                lga: localMatch.lga,
+                occupation: localMatch.occupation,
+                specialization: localMatch.specialization,
+                membershipType: localMatch.membershipType,
+                position: localMatch.position || 'Member',
+                status: 'Approved & Certified',
+                passportUrl: localMatch.passportUrl || localMatch.passportPhotoUrl || '',
+                issueDate: localMatch.issueDate,
+                expiryDate: localMatch.expiryDate,
+                approvedAt: localMatch.approvedAt,
+                registeredAt: localMatch.registeredAt
+              }
+            });
+          }
+        }
+      }
+
+      return res.status(404).json({
+        verified: false,
+        error: 'Member verification failed. Please verify that both the Official Membership ID and Phone Number match official registration records.'
+      });
+    } catch (err: any) {
+      console.error('[API /members/verify-public Error]', err);
+      return res.status(500).json({ verified: false, error: err.message });
+    }
+  });
+
   // POST /api/members - Register or save new member
   app.post('/api/members', async (req, res) => {
     try {

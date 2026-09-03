@@ -37,7 +37,7 @@ export const MemberRenewalModule: React.FC<MemberRenewalModuleProps> = ({
   // Form State
   const [formData, setFormData] = useState({
     fullName: currentUser.fullName,
-    membershipId: currentUser.membershipId || 'NEPEF/2020/KN/001',
+    membershipId: currentUser.membershipId || 'NNEPEF/KN/0001',
     position: currentUser.position || 'Practicing Electrical Engineer',
     passportUrl: currentUser.passportUrl || '',
     receiptUrl: currentUser.paymentReceiptUrl || '',

@@ -1,49 +1,113 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Member } from '../types';
-import { ShieldCheck, Search, AlertCircle, CheckCircle2, Lock, ArrowLeft, Award, MapPin, Building2, User } from 'lucide-react';
+import { ShieldCheck, Search, AlertCircle, CheckCircle2, Lock, ArrowLeft, Award, MapPin, Building2, Phone, Hash, Copy, Check, Printer } from 'lucide-react';
 import { handleImageError, getValidImageUrl } from '../utils/imageHelpers';
-import { verifyMemberBySearch } from '../services/supabaseService';
+import { verifyMemberByMembershipAndPhone, PublicVerifiedMember } from '../services/supabaseService';
 
 interface MemberVerificationProps {
-  members: Member[];
+  members?: Member[];
   setCurrentView: (view: string) => void;
 }
 
-export const MemberVerification: React.FC<MemberVerificationProps> = ({ members, setCurrentView }) => {
-  const [searchQuery, setSearchQuery] = useState('');
+export const MemberVerification: React.FC<MemberVerificationProps> = ({ setCurrentView }) => {
+  const [membershipNumber, setMembershipNumber] = useState('');
+  const [phoneNumber, setPhoneNumber] = useState('');
   const [hasSearched, setHasSearched] = useState(false);
-  const [remoteResults, setRemoteResults] = useState<Partial<Member>[] | null>(null);
   const [isSearching, setIsSearching] = useState(false);
+  const [verifiedMember, setVerifiedMember] = useState<PublicVerifiedMember | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [copiedMessage, setCopiedMessage] = useState<string | null>(null);
 
-  // Filter ONLY Approved Members for Public Verification from local state
-  const approvedMembers = members.filter(m => m.status === 'approved' || m.status === 'Active');
+  const showCopyFeedback = (msg: string) => {
+    setCopied(true);
+    setCopiedMessage(msg);
+    setTimeout(() => {
+      setCopied(false);
+      setCopiedMessage(null);
+    }, 3500);
+  };
 
-  const localResults = searchQuery.trim() === ''
-    ? []
-    : approvedMembers.filter(m => 
-        m.fullName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (m.membershipId && m.membershipId.toLowerCase().includes(searchQuery.toLowerCase()))
-      );
+  const copyToClipboard = (text: string, feedbackMsg: string) => {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => {
+        showCopyFeedback(feedbackMsg);
+      }).catch(() => fallbackCopy(text, feedbackMsg));
+    } else {
+      fallbackCopy(text, feedbackMsg);
+    }
+  };
 
-  const searchResults = remoteResults !== null ? remoteResults : localResults;
+  const fallbackCopy = (text: string, feedbackMsg: string) => {
+    try {
+      const textArea = document.createElement('textarea');
+      textArea.value = text;
+      textArea.style.position = 'fixed';
+      textArea.style.opacity = '0';
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textArea);
+      showCopyFeedback(feedbackMsg);
+    } catch (err) {
+      console.error('Copy fallback failed:', err);
+    }
+  };
+
+  const handleCopyFullResult = () => {
+    if (!verifiedMember) return;
+    const textToCopy = `====================================================
+N-NEPEF 2020 OFFICIAL MEMBER VERIFICATION RESULT
+Northern Nigeria Electrical Practitioners & Engineers Forum
+====================================================
+Status: APPROVED & CERTIFIED PRACTITIONER
+Full Name: ${verifiedMember.fullName}
+Official Membership ID: ${verifiedMember.membershipId}
+Position: ${verifiedMember.position || 'Practicing Member'}
+Membership Type: ${verifiedMember.membershipType || 'Full Member'}
+Discipline / Occupation: ${verifiedMember.occupation || 'Electrical Practitioner'}
+${verifiedMember.specialization ? `Area of Specialization: ${verifiedMember.specialization}\n` : ''}Chapter Jurisdiction: ${verifiedMember.state} State Chapter${verifiedMember.lga ? ` (${verifiedMember.lga} LGA)` : ''}
+Organization: Northern Nigeria Electrical Practitioners & Engineers Forum (N-NEPEF 2020)
+Verification Date: ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}
+Portal Reference: Verified against official database records
+====================================================`;
+
+    copyToClipboard(textToCopy, 'An kwafi cikakken sakamakon tantancewa zuwa ga clipboard!');
+  };
+
+  const handleCopyIdOnly = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!verifiedMember?.membershipId) return;
+    copyToClipboard(verifiedMember.membershipId, `An kwafi lambar memba: ${verifiedMember.membershipId}`);
+  };
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (searchQuery.trim()) {
-      setHasSearched(true);
-      setIsSearching(true);
-      try {
-        const cloudMatches = await verifyMemberBySearch(searchQuery);
-        if (cloudMatches && cloudMatches.length > 0) {
-          setRemoteResults(cloudMatches);
-        } else {
-          setRemoteResults(localResults);
-        }
-      } catch (err) {
-        setRemoteResults(localResults);
-      } finally {
-        setIsSearching(false);
+    const cleanId = membershipNumber.trim();
+    const cleanPhone = phoneNumber.trim();
+
+    if (!cleanId || !cleanPhone) {
+      setSearchError('Both Official Membership Number and Registered Phone Number are required for verification.');
+      return;
+    }
+
+    setHasSearched(true);
+    setIsSearching(true);
+    setSearchError(null);
+    setVerifiedMember(null);
+
+    try {
+      const result = await verifyMemberByMembershipAndPhone(cleanId, cleanPhone);
+      if (result) {
+        setVerifiedMember(result);
+      } else {
+        setVerifiedMember(null);
       }
+    } catch (err: any) {
+      setSearchError('An error occurred during verification check. Please check your network connection.');
+    } finally {
+      setIsSearching(false);
     }
   };
 
@@ -61,7 +125,7 @@ export const MemberVerification: React.FC<MemberVerificationProps> = ({ members,
         </button>
         <span className="inline-flex items-center gap-1 text-xs font-bold px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
           <Lock className="w-3 h-3" />
-          <span>Public Verified Database</span>
+          <span>Dual-Factor Public Verification</span>
         </span>
       </div>
 
@@ -75,148 +139,262 @@ export const MemberVerification: React.FC<MemberVerificationProps> = ({ members,
           <h1 className="font-display font-extrabold text-2xl sm:text-3xl text-slate-900 dark:text-white">
             Official Member Verification
           </h1>
-          <p className="text-xs text-slate-600 dark:text-slate-300 max-w-lg mx-auto">
-            Search for certified electrical engineers and practitioners in Northern Nigeria by entering their <strong>Membership ID Number</strong> or <strong>Full Name</strong>.
+          <p className="text-xs text-slate-600 dark:text-slate-300 max-w-lg mx-auto leading-relaxed">
+            Verify official certified electrical engineers and practitioners in Northern Nigeria. To protect member privacy and prevent unauthorized checks, <strong>BOTH</strong> the <strong>Official Membership Number</strong> and the <strong>Registered Phone Number</strong> are strictly required.
           </p>
         </div>
 
-        {/* Search Input Box */}
-        <form onSubmit={handleSearch} className="max-w-xl mx-auto pt-2">
-          <div className="relative flex items-center">
-            <Search className="w-5 h-5 text-slate-400 absolute left-4" />
-            <input
-              type="text"
-              required
-              value={searchQuery}
-              onChange={(e) => {
-                setSearchQuery(e.target.value);
-                setHasSearched(false);
-              }}
-              placeholder="Enter Membership ID Number or Full Name..."
-              className="w-full pl-12 pr-28 py-3.5 rounded-2xl border-2 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm font-medium text-slate-900 dark:text-white focus:border-[#2EA3F2] outline-none shadow-sm"
-            />
-            <button
-              type="submit"
-              className="absolute right-2 px-5 py-2 rounded-xl bg-[#0A2E73] text-white text-xs font-bold hover:bg-sky-700 transition-colors shadow"
-            >
-              Verify
-            </button>
+        {/* Dual Input Verification Form */}
+        <form onSubmit={handleSearch} className="max-w-xl mx-auto pt-2 space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {/* Membership ID Input */}
+            <div className="relative flex items-center">
+              <Hash className="w-4 h-4 text-slate-400 absolute left-3.5" />
+              <input
+                type="text"
+                required
+                value={membershipNumber}
+                onChange={(e) => {
+                  setMembershipNumber(e.target.value);
+                  setHasSearched(false);
+                }}
+                placeholder="Official ID (e.g. NNEPEF/KN/0001)"
+                className="w-full pl-10 pr-3 py-3 rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono font-medium text-slate-900 dark:text-white focus:border-[#2EA3F2] outline-none shadow-sm"
+              />
+            </div>
+
+            {/* Phone Number Input */}
+            <div className="relative flex items-center">
+              <Phone className="w-4 h-4 text-slate-400 absolute left-3.5" />
+              <input
+                type="tel"
+                required
+                value={phoneNumber}
+                onChange={(e) => {
+                  setPhoneNumber(e.target.value);
+                  setHasSearched(false);
+                }}
+                placeholder="Registered Phone (e.g. 080...)"
+                className="w-full pl-10 pr-3 py-3 rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-900 dark:text-white focus:border-[#2EA3F2] outline-none shadow-sm"
+              />
+            </div>
           </div>
+
+          <button
+            type="submit"
+            disabled={isSearching || !membershipNumber.trim() || !phoneNumber.trim()}
+            className="w-full py-3 rounded-xl bg-[#0A2E73] text-white text-xs font-bold hover:bg-sky-700 transition-colors shadow flex items-center justify-center gap-2 disabled:opacity-50"
+          >
+            <Search className="w-4 h-4" />
+            <span>{isSearching ? 'Verifying with Supabase...' : 'Verify Official Membership Record'}</span>
+          </button>
         </form>
+
+        {searchError && (
+          <div className="p-3 bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 rounded-xl text-xs text-amber-800 dark:text-amber-200">
+            {searchError}
+          </div>
+        )}
 
         <p className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center justify-center gap-1 pt-1">
           <Lock className="w-3.5 h-3.5 text-emerald-500" />
-          <span>Strict Privacy Enforced: Phone numbers, emails, addresses, NIN, DOB &amp; payment receipts are private and hidden.</span>
+          <span>Strict Privacy Protection: Verification requires both fields. Confidential data (NIN, DOB, home address, next of kin, phone, receipts) is never disclosed.</span>
         </p>
       </div>
 
-      {/* SEARCH RESULTS DISPLAY */}
-      {hasSearched || searchQuery.trim() !== '' ? (
+      {/* VERIFICATION RESULTS DISPLAY */}
+      {hasSearched ? (
         <div className="space-y-6">
           <div className="flex items-center justify-between">
             <h3 className="font-display font-bold text-sm text-slate-700 dark:text-slate-300 uppercase tracking-wider">
-              Verification Results ({searchResults.length} Match Found)
+              Verification Result
             </h3>
-            <span className="text-xs text-slate-500">Only Official Approved Members Displayed</span>
+            <span className="text-xs text-slate-500">Only Active Certified Members Displayed</span>
           </div>
 
-          {searchResults.length === 0 ? (
-            <div className="p-8 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 rounded-2xl text-center space-y-3">
+          {!verifiedMember ? (
+            <div className="p-8 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 rounded-3xl text-center space-y-3">
               <AlertCircle className="w-10 h-10 text-red-500 mx-auto" />
-              <h4 className="font-bold text-lg text-red-800 dark:text-red-300">This member cannot be verified.</h4>
-              <p className="text-xs text-red-700 dark:text-red-300 max-w-md mx-auto">
-                No active approved member record matching "<strong>{searchQuery}</strong>" was found in the official N-NEPEF database. Unapproved, pending, or non-existent members cannot be verified.
+              <h4 className="font-bold text-lg text-red-800 dark:text-red-300">Member Record Not Verified</h4>
+              <p className="text-xs text-red-700 dark:text-red-300 max-w-lg mx-auto leading-relaxed">
+                No active approved member record was found matching Official ID "<strong>{membershipNumber}</strong>" and Phone Number "<strong>{phoneNumber}</strong>" in the official N-NEPEF database. Both the membership number and registered phone number must match an approved record. Unapproved or pending applications cannot be verified publicly.
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {searchResults.map((member) => (
-                <div 
-                  key={member.id}
-                  className="glass-card p-6 rounded-3xl border-2 border-emerald-500/40 dark:border-emerald-500/50 relative overflow-hidden space-y-4 shadow-xl"
-                >
-                  {/* Status Ribbon */}
-                  <div className="absolute top-4 right-4 flex items-center gap-1 px-3 py-1 rounded-full bg-emerald-500 text-slate-950 text-[10px] font-extrabold uppercase tracking-wider shadow">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>VERIFIED ACTIVE</span>
+            <div className="glass-card p-6 sm:p-8 rounded-3xl border-2 border-emerald-500/50 dark:border-emerald-500/60 relative overflow-hidden space-y-6 shadow-2xl">
+              {/* Status Ribbon */}
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-4">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+                    <CheckCircle2 className="w-5 h-5" />
                   </div>
-
-                  <div className="flex items-center gap-4 pt-2">
-                    <img 
-                      src={getValidImageUrl(member.passportUrl, 'avatar')} 
-                      alt={member.fullName} 
-                      onError={(e) => handleImageError(e, 'avatar')}
-                      className="w-20 h-20 rounded-2xl object-cover border-2 border-[#0A2E73] dark:border-sky-400 shadow-md flex-shrink-0"
-                    />
-                    <div className="space-y-1">
-                      <h4 className="font-display font-extrabold text-lg text-slate-900 dark:text-white leading-tight">
-                        {member.fullName}
-                      </h4>
-                      <div className="font-mono text-xs font-extrabold text-[#2EA3F2] bg-sky-50 dark:bg-sky-950 px-2.5 py-1 rounded-lg inline-block border border-sky-200 dark:border-sky-800">
-                        {member.membershipId}
-                      </div>
-                      <p className="text-xs font-bold text-slate-600 dark:text-slate-300">
-                        {member.position || 'Practicing Member'}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Public Verification Attributes Grid (EXCLUSIVELY ALLOWED FIELDS) */}
-                  <div className="bg-slate-50 dark:bg-slate-900 p-4 rounded-2xl space-y-2 text-xs border border-slate-200 dark:border-slate-800">
-                    <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
-                      <span className="text-slate-500 flex items-center gap-1">
-                        <Award className="w-3.5 h-3.5 text-[#2EA3F2]" />
-                        Specialization:
-                      </span>
-                      <span className="font-bold text-slate-900 dark:text-white text-right max-w-[200px] truncate">
-                        {member.specialization}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
-                      <span className="text-slate-500 flex items-center gap-1">
-                        <MapPin className="w-3.5 h-3.5 text-[#2EA3F2]" />
-                        State Chapter:
-                      </span>
-                      <span className="font-bold text-slate-900 dark:text-white">
-                        {member.state} State
-                      </span>
-                    </div>
-
-                    <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
-                      <span className="text-slate-500 flex items-center gap-1">
-                        <ShieldCheck className="w-3.5 h-3.5 text-[#2EA3F2]" />
-                        Membership Status:
-                      </span>
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
-                        VERIFIED ACTIVE
-                      </span>
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-500 flex items-center gap-1">
-                        <Building2 className="w-3.5 h-3.5 text-[#2EA3F2]" />
-                        Organization Name:
-                      </span>
-                      <span className="font-bold text-slate-900 dark:text-white text-right">
-                        N-NEPEF 2020
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Banner Statement */}
-                  <div className="p-3 bg-emerald-50 dark:bg-emerald-950/60 rounded-xl border border-emerald-200 dark:border-emerald-800 text-[11px] text-emerald-900 dark:text-emerald-200 text-center font-bold">
-                    Verified Official Member of Northern Nigerian Electrical Practitioners &amp; Engineers Forum (N-NEPEF 2020).
+                  <div>
+                    <h3 className="font-bold text-sm text-emerald-800 dark:text-emerald-300">
+                      OFFICIAL CERTIFIED MEMBER
+                    </h3>
+                    <p className="text-[11px] text-slate-500">Verified against official N-NEPEF 2020 register</p>
                   </div>
                 </div>
-              ))}
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleCopyFullResult}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold transition-all bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow cursor-pointer"
+                    title="Kwafi Cikakken Sakamakon Tantancewa"
+                  >
+                    {copied ? <Check className="w-3.5 h-3.5 text-slate-950" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copied ? 'An Kwafa!' : 'Kwafi Sakamako'}</span>
+                  </button>
+                  <div className="px-3 py-1 rounded-full bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 text-xs font-black uppercase tracking-wider border border-emerald-300 dark:border-emerald-800">
+                    VERIFIED ACTIVE
+                  </div>
+                </div>
+              </div>
+
+              {/* Toast Feedback Notification Banner */}
+              {copiedMessage && (
+                <div className="flex items-center justify-between gap-3 p-3 bg-emerald-50 dark:bg-emerald-950/80 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs font-bold text-emerald-900 dark:text-emerald-200 animate-in fade-in duration-200">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
+                    <span>{copiedMessage}</span>
+                  </div>
+                  <span className="text-[10px] text-emerald-700 dark:text-emerald-400 bg-emerald-200/60 dark:bg-emerald-900 px-2 py-0.5 rounded">
+                    Copied
+                  </span>
+                </div>
+              )}
+
+              {/* Profile Card */}
+              <div className="flex flex-col sm:flex-row items-center sm:items-start gap-5">
+                <img 
+                  src={getValidImageUrl(verifiedMember.passportUrl, 'avatar')} 
+                  alt={verifiedMember.fullName} 
+                  onError={(e) => handleImageError(e, 'avatar')}
+                  className="w-24 h-24 sm:w-28 sm:h-28 rounded-2xl object-cover border-2 border-[#0A2E73] dark:border-sky-400 shadow-lg flex-shrink-0"
+                />
+                <div className="space-y-1.5 text-center sm:text-left flex-1">
+                  <h4 className="font-display font-extrabold text-xl sm:text-2xl text-slate-900 dark:text-white leading-tight">
+                    {verifiedMember.fullName}
+                  </h4>
+                  <div className="inline-flex items-center gap-2 font-mono text-xs font-extrabold text-[#0A2E73] dark:text-[#2EA3F2] bg-sky-50 dark:bg-sky-950 px-3 py-1 rounded-lg border border-sky-200 dark:border-sky-800">
+                    <span>{verifiedMember.membershipId}</span>
+                    <button
+                      type="button"
+                      onClick={handleCopyIdOnly}
+                      className="p-1 hover:bg-sky-200 dark:hover:bg-sky-900 rounded transition-colors text-slate-600 dark:text-slate-300 hover:text-sky-900 cursor-pointer"
+                      title="Kwafi Lambar Memba (Copy ID)"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <p className="text-xs font-bold text-slate-600 dark:text-slate-300">
+                    {verifiedMember.position || 'Practicing Member'} &bull; {verifiedMember.membershipType || 'Full Member'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Public Verification Attributes Grid (EXCLUSIVELY ALLOWED SAFE FIELDS) */}
+              <div className="bg-slate-50 dark:bg-slate-900 p-5 rounded-2xl space-y-2.5 text-xs border border-slate-200 dark:border-slate-800">
+                <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
+                  <span className="text-slate-500 flex items-center gap-1.5">
+                    <Award className="w-4 h-4 text-[#2EA3F2]" />
+                    Occupation / Discipline:
+                  </span>
+                  <span className="font-bold text-slate-900 dark:text-white">
+                    {verifiedMember.occupation || 'Electrical Practitioner'}
+                  </span>
+                </div>
+
+                {verifiedMember.specialization && (
+                  <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
+                    <span className="text-slate-500 flex items-center gap-1.5">
+                      <Award className="w-4 h-4 text-[#2EA3F2]" />
+                      Area of Specialization:
+                    </span>
+                    <span className="font-bold text-slate-900 dark:text-white text-right">
+                      {verifiedMember.specialization}
+                    </span>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
+                  <span className="text-slate-500 flex items-center gap-1.5">
+                    <MapPin className="w-4 h-4 text-[#2EA3F2]" />
+                    Chapter Jurisdiction:
+                  </span>
+                  <span className="font-bold text-slate-900 dark:text-white">
+                    {verifiedMember.state} State Chapter {verifiedMember.lga ? `(${verifiedMember.lga} LGA)` : ''}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
+                  <span className="text-slate-500 flex items-center gap-1.5">
+                    <ShieldCheck className="w-4 h-4 text-[#2EA3F2]" />
+                    Membership Status:
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+                    APPROVED &amp; CERTIFIED
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 flex items-center gap-1.5">
+                    <Building2 className="w-4 h-4 text-[#2EA3F2]" />
+                    Official Organization:
+                  </span>
+                  <span className="font-bold text-slate-900 dark:text-white text-right">
+                    N-NEPEF 2020
+                  </span>
+                </div>
+              </div>
+
+              {/* Verified Certificate Note */}
+              <div className="p-3.5 bg-emerald-50 dark:bg-emerald-950/60 rounded-xl border border-emerald-200 dark:border-emerald-800 text-[11px] text-emerald-900 dark:text-emerald-200 text-center font-bold">
+                Officially certified practitioner under Northern Nigeria Electrical Practitioners &amp; Engineers Forum (N-NEPEF 2020). Certified in accordance with Forum registration criteria.
+              </div>
+
+              {/* Action Buttons: Copy Result & Print */}
+              <div className="pt-2 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 border-t border-slate-200 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={handleCopyFullResult}
+                  className="flex-1 inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-[#0A2E73] hover:bg-[#08245a] text-white font-bold text-xs shadow-md transition-all cursor-pointer"
+                  title="Kwafi Cikakken Sakamako"
+                >
+                  {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                  <span>{copied ? 'An Kwafi Sakamako! (Copied!)' : 'Kwafi Sakamakon Tantancewa (Copy Result)'}</span>
+                </button>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleCopyIdOnly}
+                    className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-4 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 font-bold text-xs transition-colors cursor-pointer"
+                    title="Kwafi Lambar Memba"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Kwafi ID</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => window.print()}
+                    className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs transition-colors cursor-pointer"
+                    title="Buga Takardar Sakamako"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    <span>Buga (Print)</span>
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>
       ) : (
-        <div className="glass-card p-8 rounded-3xl border border-slate-200 dark:border-slate-800 text-center space-y-4">
+        <div className="glass-card p-8 rounded-3xl border border-slate-200 dark:border-slate-800 text-center space-y-3">
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            Please enter a <strong>Membership ID Number</strong> (e.g. NEPEF/2020/KN/001) or <strong>Full Name</strong> above to perform an official verification check.
+            Please enter the member's <strong>Official Membership ID</strong> (e.g. <strong>NNEPEF/KN/0001</strong>) and their <strong>Registered Phone Number</strong> above, then click <strong>Verify</strong>.
           </p>
         </div>
       )}

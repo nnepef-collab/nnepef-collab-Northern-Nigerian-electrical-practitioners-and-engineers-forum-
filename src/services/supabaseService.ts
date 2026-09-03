@@ -20,10 +20,23 @@ import {
   NotificationDeliveryLog,
   FeeCategory,
   BankAccount,
-  AppRole
+  AppRole,
+  Announcement,
+  NewsArticle,
+  Executive,
+  EventItem,
+  DocumentItem,
+  GalleryAlbum,
+  ContactMessage,
+  RenewalRequest,
+  CMSFile,
+  AdminAccount
 } from '../types';
 
 import {
+  getLocalAdmins,
+  saveLocalAdmins,
+  saveLocalAdmin,
   getLocalPayments,
   saveLocalPayment,
   saveLocalPaymentsList,
@@ -42,7 +55,25 @@ import {
   deleteDeliveryLog,
   clearAllDeliveryLogs,
   getLocalBankAccounts,
-  saveLocalBankAccounts
+  saveLocalBankAccounts,
+  getLocalAnnouncements,
+  saveLocalAnnouncements,
+  getLocalNews,
+  saveLocalNews,
+  getLocalExecutives,
+  saveLocalExecutives,
+  getLocalEvents,
+  saveLocalEvents,
+  getLocalDocuments,
+  saveLocalDocuments,
+  getLocalGallery,
+  saveLocalGallery,
+  getLocalContactMessages,
+  saveLocalContactMessages,
+  getLocalRenewals,
+  saveLocalRenewals,
+  getLocalCMSFiles,
+  saveLocalCMSFiles
 } from './localDatabaseService';
 import { generateUUID } from '../utils/uuid';
 
@@ -98,34 +129,52 @@ export function extractSequenceNumberFromMembershipId(membershipId?: string | nu
   return null;
 }
 
+export const NIGERIAN_STATE_CODES: Record<string, string> = {
+  'ABIA': 'AB', 'ADAMAWA': 'AD', 'AKWA IBOM': 'AK', 'ANAMBRA': 'AN', 'BAUCHI': 'BA',
+  'BAYELSA': 'BY', 'BENUE': 'BN', 'BORNO': 'BO', 'CROSS RIVER': 'CR', 'DELTA': 'DE',
+  'EBONYI': 'EB', 'EDO': 'ED', 'EKITI': 'EK', 'ENUGU': 'EN', 'FCT': 'FC', 'ABUJA': 'FC',
+  'FEDERAL CAPITAL TERRITORY': 'FC', 'GOMBE': 'GM', 'IMO': 'IM', 'JIGAWA': 'JG',
+  'KADUNA': 'KD', 'KANO': 'KN', 'KATSINA': 'KT', 'KEBBI': 'KB', 'KOGI': 'KG',
+  'KWARA': 'KW', 'LAGOS': 'LA', 'NASARAWA': 'NA', 'NIGER': 'NG', 'OGUN': 'OG',
+  'ONDO': 'ON', 'OSUN': 'OS', 'OYO': 'OY', 'PLATEAU': 'PL', 'RIVERS': 'RV',
+  'SOKOTO': 'SO', 'TARABA': 'TR', 'YOBE': 'YB', 'ZAMFARA': 'ZM'
+};
+
 /**
- * Formats a sequential number into official Membership ID format.
- * Supports numbers from 1 to 10,000+ seamlessly:
- *   1    -> NNEPEF/2024/001
- *   31   -> NNEPEF/2024/031
- *   32   -> NNEPEF/2024/032
- *   100  -> NNEPEF/2024/100
- *   1000 -> NNEPEF/2024/1000
+ * Resolves a state name or code into the official 2-letter Nigerian state code.
+ * Defaults to 'KN' (Kano) if not specified or unrecognized.
  */
-export function formatMembershipId(sequenceNumber: number, year?: number): string {
-  const currentYear = year || (new Date().getFullYear() >= 2024 ? new Date().getFullYear() : 2024);
-  const padLength = sequenceNumber >= 1000 ? String(sequenceNumber).length : 3;
-  const padded = String(sequenceNumber).padStart(padLength, '0');
-  return `NNEPEF/${currentYear}/${padded}`;
+export function getStateCode(stateOrCode?: string): string {
+  if (!stateOrCode) return 'KN';
+  const clean = stateOrCode.trim().toUpperCase();
+  if (NIGERIAN_STATE_CODES[clean]) return NIGERIAN_STATE_CODES[clean];
+  for (const [name, code] of Object.entries(NIGERIAN_STATE_CODES)) {
+    if (clean.includes(name) || name.includes(clean)) return code;
+  }
+  if (clean.length === 2 && /^[A-Z]{2}$/.test(clean)) return clean;
+  return clean.substring(0, 2).toUpperCase() || 'KN';
+}
+
+/**
+ * Formats a sequential number into the required official Membership ID format:
+ * NNEPEF/XX/0000 (e.g. NNEPEF/KN/0001, NNEPEF/KD/0002, NNEPEF/SO/0003)
+ */
+export function formatMembershipId(sequenceNumber: number, stateOrCode?: string | number): string {
+  const code = typeof stateOrCode === 'string' ? getStateCode(stateOrCode) : 'KN';
+  const padded = String(sequenceNumber).padStart(4, '0');
+  return `NNEPEF/${code}/${padded}`;
 }
 
 /**
  * Asynchronously queries Supabase PostgreSQL `members` table to find the highest
- * existing sequence number across ALL member records and generates the NEXT
- * strictly unique, collision-free membership ID.
- * 
- * Supports 1,000+ members without any 31-record limits.
+ * existing sequence number and generates the NEXT strictly unique, collision-free
+ * membership ID in the required NNEPEF/XX/0000 format.
  */
 export async function fetchNextAvailableMembershipIdFromSupabase(
-  stateCode?: string,
-  preferredYear?: number
+  stateOrCode?: string,
+  _ignoredYear?: number
 ): Promise<string> {
-  const targetYear = preferredYear || (new Date().getFullYear() >= 2024 ? new Date().getFullYear() : 2024);
+  const stateCode = getStateCode(stateOrCode);
   const existingIds = new Set<string>();
   const parsedNumbers: number[] = [];
 
@@ -139,8 +188,8 @@ export async function fetchNextAvailableMembershipIdFromSupabase(
       if (!error && Array.isArray(data)) {
         for (const row of data) {
           if (row.membership_id) {
-            const idStr = String(row.membership_id).trim();
-            existingIds.add(idStr.toUpperCase());
+            const idStr = String(row.membership_id).trim().toUpperCase();
+            existingIds.add(idStr);
             const num = extractSequenceNumberFromMembershipId(idStr);
             if (num !== null) {
               parsedNumbers.push(num);
@@ -162,9 +211,9 @@ export async function fetchNextAvailableMembershipIdFromSupabase(
       const json = await res.json();
       if (json.success && Array.isArray(json.data)) {
         for (const row of json.data) {
-          const idStr = String(row.membershipId || row.membership_id || '').trim();
+          const idStr = String(row.membershipId || row.membership_id || '').trim().toUpperCase();
           if (idStr) {
-            existingIds.add(idStr.toUpperCase());
+            existingIds.add(idStr);
             const num = extractSequenceNumberFromMembershipId(idStr);
             if (num !== null) {
               parsedNumbers.push(num);
@@ -176,35 +225,33 @@ export async function fetchNextAvailableMembershipIdFromSupabase(
   } catch (e) {}
 
   // Determine the highest sequence number present in Supabase
-  let highestSequence = parsedNumbers.length > 0 ? Math.max(...parsedNumbers) : 0;
-  
-  // Starting candidate is at least highestSequence + 1
+  const highestSequence = parsedNumbers.length > 0 ? Math.max(...parsedNumbers) : 0;
   let candidateNum = Math.max(1, highestSequence + 1);
-  let candidateId = formatMembershipId(candidateNum, targetYear);
+  let candidateId = formatMembershipId(candidateNum, stateCode);
 
   // Guarantee absolute uniqueness against all existing database records
   while (existingIds.has(candidateId.toUpperCase())) {
     candidateNum++;
-    candidateId = formatMembershipId(candidateNum, targetYear);
+    candidateId = formatMembershipId(candidateNum, stateCode);
   }
 
-  console.log(`[Supabase Sequence] Highest existing sequence: ${highestSequence}, Generated Next Unique ID: ${candidateId}`);
+  console.log(`[Supabase Sequence] State: ${stateCode}, Highest sequence: ${highestSequence}, Generated Next ID: ${candidateId}`);
   return candidateId;
 }
 
 /**
- * Synchronous ID generator helper that scans an existing list of members.
+ * Synchronous ID generator helper formatted as NNEPEF/XX/0000.
  */
-export function generateMembershipId(stateCode: string = 'KT', existingMemberList?: Member[]): string {
-  const targetYear = new Date().getFullYear() >= 2024 ? new Date().getFullYear() : 2024;
+export function generateMembershipId(stateOrCode: string = 'KN', existingMemberList?: Member[]): string {
+  const stateCode = getStateCode(stateOrCode);
   const members = existingMemberList || [];
   const parsedNumbers: number[] = [];
   const existingIds = new Set<string>();
 
   for (const m of members) {
     if (m.membershipId) {
-      const idStr = String(m.membershipId).trim();
-      existingIds.add(idStr.toUpperCase());
+      const idStr = String(m.membershipId).trim().toUpperCase();
+      existingIds.add(idStr);
       const num = extractSequenceNumberFromMembershipId(idStr);
       if (num !== null) {
         parsedNumbers.push(num);
@@ -212,13 +259,13 @@ export function generateMembershipId(stateCode: string = 'KT', existingMemberLis
     }
   }
 
-  let highestSequence = parsedNumbers.length > 0 ? Math.max(...parsedNumbers) : 0;
+  const highestSequence = parsedNumbers.length > 0 ? Math.max(...parsedNumbers) : 0;
   let candidateNum = Math.max(1, highestSequence + 1);
-  let candidateId = formatMembershipId(candidateNum, targetYear);
+  let candidateId = formatMembershipId(candidateNum, stateCode);
 
   while (existingIds.has(candidateId.toUpperCase())) {
     candidateNum++;
-    candidateId = formatMembershipId(candidateNum, targetYear);
+    candidateId = formatMembershipId(candidateNum, stateCode);
   }
 
   return candidateId;
@@ -1028,6 +1075,103 @@ export async function rejectMemberOnServer(memberId: string, rejectionReason?: s
 // 3. PUBLIC VERIFICATION QUERY
 // ============================================================================
 
+export interface PublicVerifiedMember {
+  id: string;
+  membershipId: string;
+  fullName: string;
+  state: string;
+  lga?: string;
+  occupation?: string;
+  specialization?: string;
+  membershipType?: string;
+  position?: string;
+  status: string;
+  passportUrl?: string;
+  issueDate?: string;
+  expiryDate?: string;
+  approvedAt?: string;
+  registeredAt?: string;
+}
+
+/**
+ * Public Member Verification requiring BOTH:
+ * 1. Official Membership Number (e.g. NNEPEF/KN/0001)
+ * 2. Registered Phone Number (e.g. 080...)
+ * 
+ * Strict Privacy: NEVER returns NIN, DOB, address, next of kin, phone, email, or payment receipts.
+ */
+export async function verifyMemberByMembershipAndPhone(
+  membershipNumber: string,
+  phoneNumber: string
+): Promise<PublicVerifiedMember | null> {
+  const cleanId = membershipNumber.trim().toUpperCase();
+  const rawPhone = phoneNumber.trim();
+  const digitsOnlyPhone = rawPhone.replace(/\D/g, '');
+
+  if (!cleanId || !rawPhone || digitsOnlyPhone.length < 8) {
+    return null;
+  }
+
+  // 1. Query server-side verification endpoint
+  try {
+    const res = await fetch('/api/members/verify-public', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ membershipNumber: cleanId, phoneNumber: rawPhone })
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.verified && json.member) {
+        return json.member;
+      }
+    }
+  } catch (e) {
+    console.warn('[Verification] Server verify check error:', e);
+  }
+
+  // 2. Direct Supabase Query fallback
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('members')
+        .select('id, membership_id, full_name, state, lga, occupation, specialization, membership_type, position, status, passport_url, passport_photo_url, issue_date, expiry_date, approved_at, registered_at, phone')
+        .ilike('membership_id', cleanId)
+        .in('status', ['approved', 'Approved', 'active', 'Active'])
+        .maybeSingle();
+
+      if (!error && data) {
+        const dbPhoneDigits = String(data.phone || '').replace(/\D/g, '');
+        const inputSuffix = digitsOnlyPhone.slice(-8);
+        const dbSuffix = dbPhoneDigits.slice(-8);
+
+        if (inputSuffix && dbSuffix && inputSuffix === dbSuffix) {
+          return {
+            id: data.id,
+            membershipId: data.membership_id,
+            fullName: data.full_name,
+            state: data.state,
+            lga: data.lga,
+            occupation: data.occupation,
+            specialization: data.specialization,
+            membershipType: data.membership_type,
+            position: data.position || 'Member',
+            status: 'Approved & Certified',
+            passportUrl: data.passport_url || data.passport_photo_url,
+            issueDate: data.issue_date,
+            expiryDate: data.expiry_date,
+            approvedAt: data.approved_at,
+            registeredAt: data.registered_at
+          };
+        }
+      }
+    } catch (err) {
+      console.warn('[Verification] Supabase direct query exception:', err);
+    }
+  }
+
+  return null;
+}
+
 export async function verifyMemberBySearch(searchQuery: string): Promise<Partial<Member>[]> {
   const clean = searchQuery.trim().toLowerCase();
   if (!clean) return [];
@@ -1705,6 +1849,8 @@ export async function saveAuditLogToSQLite(
   }
 }
 
+export const saveAuditLogToSupabase = saveAuditLogToSQLite;
+
 export function subscribeToSettings(callback: (settings: ForumSettings) => void) {
   callback(getLocalSettings());
 
@@ -1786,6 +1932,165 @@ export async function saveSettingsToSupabase(settings: ForumSettings): Promise<F
 }
 
 export const saveSettingsToSQLite = saveSettingsToSupabase;
+
+// ============================================================================
+// 4.14 ADMIN ACCOUNTS API (Supabase PostgreSQL `admin_accounts` / `admin_profiles`)
+// ============================================================================
+
+export async function fetchAdminsFromSupabase(): Promise<AdminAccount[]> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('admin_accounts')
+        .select('*')
+        .order('created_at', { ascending: true });
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const mapped: AdminAccount[] = data.map((r: any) => ({
+          id: r.id,
+          fullName: r.full_name || r.name || 'Admin User',
+          email: r.email,
+          phone: r.phone || '',
+          username: r.username || r.email?.split('@')[0],
+          role: (r.role as any) || 'super_admin',
+          state: r.state || undefined,
+          lga: r.lga || undefined,
+          password: r.password,
+          passwordHash: r.password_hash,
+          permissions: r.permissions || [],
+          status: r.status || 'active',
+          lastLogin: r.last_login || undefined,
+          createdAt: r.created_at || undefined
+        }));
+
+        saveLocalAdmins(mapped);
+        return mapped;
+      }
+    } catch (err) {
+      console.warn('[Supabase] Error loading admin accounts:', err);
+    }
+  }
+
+  return getLocalAdmins();
+}
+
+export async function saveAdminToSupabase(admin: AdminAccount): Promise<AdminAccount> {
+  saveLocalAdmin(admin);
+
+  if (isSupabaseConfigured()) {
+    try {
+      const payload: any = {
+        id: admin.id,
+        full_name: admin.fullName,
+        email: admin.email,
+        phone: admin.phone || null,
+        username: admin.username || admin.email?.split('@')[0],
+        role: admin.role,
+        state: admin.state || null,
+        lga: admin.lga || null,
+        password_hash: admin.passwordHash || null,
+        permissions: admin.permissions || [],
+        status: admin.status || 'active',
+        updated_at: new Date().toISOString()
+      };
+
+      await supabase.from('admin_accounts').upsert(payload, { onConflict: 'id' });
+    } catch (e) {
+      console.warn('[Supabase] Error saving admin account:', e);
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('nnepef_db_changed', { detail: { table: 'admin_accounts' } }));
+  }
+
+  return admin;
+}
+
+export async function deleteAdminFromSupabase(adminId: string): Promise<AdminAccount[]> {
+  const current = getLocalAdmins().filter(a => a.id !== adminId);
+  saveLocalAdmins(current);
+
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('admin_accounts').delete().eq('id', adminId);
+    } catch (e) {
+      console.warn('[Supabase] Error deleting admin account:', e);
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('nnepef_db_changed', { detail: { table: 'admin_accounts' } }));
+  }
+
+  return current;
+}
+
+// ============================================================================
+// 4.15 NOTIFICATION DELIVERY LOGS API (Supabase PostgreSQL `notification_delivery_logs`)
+// ============================================================================
+
+export async function fetchNotificationDeliveryLogsFromSupabase(): Promise<NotificationDeliveryLog[]> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('notification_delivery_logs')
+        .select('*')
+        .order('sent_at', { ascending: false })
+        .limit(100);
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const mapped: NotificationDeliveryLog[] = data.map((r: any) => ({
+          id: r.id,
+          recipientName: r.recipient_name,
+          recipientEmail: r.recipient_email,
+          recipientPhone: r.recipient_phone,
+          membershipId: r.membership_id,
+          channel: r.channel,
+          subject: r.subject,
+          message: r.message,
+          status: r.status,
+          error: r.error || undefined,
+          sentAt: r.sent_at
+        }));
+        return mapped;
+      }
+    } catch (err) {
+      console.warn('[Supabase] Error loading notification delivery logs:', err);
+    }
+  }
+
+  return getLocalDeliveryLogs();
+}
+
+export async function saveNotificationDeliveryLogToSupabase(log: NotificationDeliveryLog): Promise<NotificationDeliveryLog> {
+  addLocalDeliveryLog(log);
+
+  if (isSupabaseConfigured()) {
+    try {
+      const payload: any = {
+        id: log.id,
+        recipient_name: log.recipientName,
+        recipient_email: log.recipientEmail || null,
+        recipient_phone: log.recipientPhone || null,
+        membership_id: log.membershipId || null,
+        channel: log.channel,
+        subject: log.subject,
+        message: log.message,
+        status: log.status,
+        error: log.errorMessage || (log as any).error || null,
+        sent_at: log.sentAt || new Date().toISOString()
+      };
+
+      await supabase.from('notification_delivery_logs').upsert(payload, { onConflict: 'id' });
+    } catch (e) {
+      console.warn('[Supabase] Error saving delivery log:', e);
+    }
+  }
+
+  return log;
+}
+
 
 // Diagnostics
 export async function fetchSupabaseDiagnostics(): Promise<any> {
@@ -1929,6 +2234,776 @@ export async function deletePaymentFromSupabase(paymentId: string): Promise<Paym
 
 export const deletePaymentFromSQLite = deletePaymentFromSupabase;
 
+// ============================================================================
+// 6. CONTENT & PORTAL MANAGEMENT TABLES (SUPABASE POSTGRESQL)
+// ============================================================================
+
+// --- 6.1 FORUM SETTINGS ---
+export async function fetchSettingsFromSupabase(): Promise<ForumSettings> {
+  const local = getLocalSettings();
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('forum_settings')
+        .select('*')
+        .eq('id', 'primary_settings')
+        .maybeSingle();
+
+      if (!error && data) {
+        const mapped: ForumSettings = {
+          ...local,
+          forumName: data.forum_name || local.forumName,
+          tagline: data.tagline || local.tagline,
+          logoUrl: data.logo_url || local.logoUrl,
+          heroBannerUrl: data.hero_banner_url || local.heroBannerUrl,
+          primaryColor: data.primary_color || local.primaryColor,
+          skyColor: data.sky_color || local.skyColor,
+          themeMode: data.theme_mode || local.themeMode,
+          announcementBarText: data.announcement_bar_text || local.announcementBarText,
+          announcementBarEnabled: data.announcement_bar_enabled ?? local.announcementBarEnabled,
+          contactEmail: data.contact_email || local.contactEmail,
+          contactPhone: data.contact_phone || local.contactPhone,
+          contactPhoneSecondary: data.contact_phone_secondary || local.contactPhoneSecondary,
+          contactPhoneTertiary: data.contact_phone_tertiary || local.contactPhoneTertiary,
+          headquarters: data.headquarters || local.headquarters,
+          socialFacebook: data.social_facebook || local.socialFacebook,
+          socialTwitter: data.social_twitter || local.socialTwitter,
+          socialLinkedin: data.social_linkedin || local.socialLinkedin,
+          socialYoutube: data.social_youtube || local.socialYoutube,
+          registrationEnabled: data.registration_enabled !== false,
+          maintenanceMode: Boolean(data.portal_maintenance_mode)
+        };
+        saveLocalSettings(mapped);
+        return mapped;
+      }
+    } catch (e) {
+      console.warn('[Supabase] Error fetching settings:', e);
+    }
+  }
+  return local;
+}
+
+// --- 6.2 ANNOUNCEMENTS (`public.announcements`) ---
+export async function fetchAnnouncementsFromSupabase(): Promise<Announcement[]> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('announcements')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const mapped: Announcement[] = data.map((r: any) => ({
+          id: r.id,
+          title: r.title,
+          content: r.content,
+          pinned: Boolean(r.pinned),
+          targetGroup: (r.target_group as any) || 'all',
+          targetState: r.target_state || undefined,
+          createdAt: r.created_at || new Date().toISOString(),
+          scheduledDate: r.scheduled_date || undefined,
+          pushSent: Boolean(r.push_sent),
+          author: r.author || 'National Secretariat'
+        }));
+        saveLocalAnnouncements(mapped);
+        return mapped;
+      }
+    } catch (err) {
+      console.warn('[Supabase] Error fetching announcements:', err);
+    }
+  }
+  return getLocalAnnouncements();
+}
+
+export async function saveAnnouncementToSupabase(item: Announcement): Promise<Announcement> {
+  const current = getLocalAnnouncements();
+  const idx = current.findIndex(a => a.id === item.id);
+  const updatedList = idx >= 0 ? [...current] : [item, ...current];
+  if (idx >= 0) updatedList[idx] = item;
+  saveLocalAnnouncements(updatedList);
+
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('announcements').upsert({
+        id: item.id,
+        title: item.title,
+        content: item.content,
+        pinned: item.pinned,
+        target_group: item.targetGroup,
+        target_state: item.targetState || null,
+        scheduled_date: item.scheduledDate || null,
+        push_sent: item.pushSent,
+        author: item.author,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'id' });
+    } catch (e) {
+      console.warn('[Supabase] Error saving announcement:', e);
+    }
+  }
+  return item;
+}
+
+export async function deleteAnnouncementFromSupabase(id: string): Promise<void> {
+  const current = getLocalAnnouncements().filter(a => a.id !== id);
+  saveLocalAnnouncements(current);
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('announcements').delete().eq('id', id);
+    } catch (e) {}
+  }
+}
+
+// --- 6.3 NEWS ARTICLES (`public.news_articles`) ---
+export async function fetchNewsFromSupabase(): Promise<NewsArticle[]> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('news_articles')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const mapped: NewsArticle[] = data.map((r: any) => ({
+          id: r.id,
+          title: r.title,
+          category: (r.category as any) || 'Announcements',
+          summary: r.summary || '',
+          content: r.content,
+          imageUrl: r.image_url || '',
+          author: r.author || 'Secretariat',
+          date: r.date || (r.created_at ? r.created_at.split('T')[0] : new Date().toISOString().split('T')[0]),
+          featured: Boolean(r.featured),
+          commentsCount: Number(r.comments_count) || 0,
+          views: Number(r.views) || 0,
+          tags: Array.isArray(r.tags) ? r.tags : []
+        }));
+        saveLocalNews(mapped);
+        return mapped;
+      }
+    } catch (err) {
+      console.warn('[Supabase] Error fetching news:', err);
+    }
+  }
+  return getLocalNews();
+}
+
+export async function saveNewsToSupabase(article: NewsArticle): Promise<NewsArticle> {
+  const current = getLocalNews();
+  const idx = current.findIndex(n => n.id === article.id);
+  const updatedList = idx >= 0 ? [...current] : [article, ...current];
+  if (idx >= 0) updatedList[idx] = article;
+  saveLocalNews(updatedList);
+
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('news_articles').upsert({
+        id: article.id,
+        title: article.title,
+        category: article.category,
+        summary: article.summary,
+        content: article.content,
+        image_url: article.imageUrl,
+        author: article.author,
+        date: article.date,
+        featured: article.featured,
+        comments_count: article.commentsCount,
+        views: article.views,
+        tags: article.tags,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'id' });
+    } catch (e) {
+      console.warn('[Supabase] Error saving news:', e);
+    }
+  }
+  return article;
+}
+
+export async function deleteNewsFromSupabase(id: string): Promise<void> {
+  const current = getLocalNews().filter(n => n.id !== id);
+  saveLocalNews(current);
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('news_articles').delete().eq('id', id);
+    } catch (e) {}
+  }
+}
+
+// --- 6.4 EXECUTIVES (`public.executives`) ---
+export async function fetchExecutivesFromSupabase(): Promise<Executive[]> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('executives')
+        .select('*')
+        .order('display_order', { ascending: true });
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const mapped: Executive[] = data.map((r: any) => ({
+          id: r.id,
+          name: r.name,
+          position: r.position,
+          tier: (r.tier as any) || 'national',
+          state: r.state || undefined,
+          lga: r.lga || undefined,
+          committee: r.committee || undefined,
+          photoUrl: r.photo_url || '',
+          email: r.email || '',
+          phone: r.phone || '',
+          bio: r.bio || '',
+          term: r.term || '2024 - 2026',
+          order: Number(r.display_order) || 0,
+          active: r.active !== false
+        }));
+        saveLocalExecutives(mapped);
+        return mapped;
+      }
+    } catch (err) {
+      console.warn('[Supabase] Error fetching executives:', err);
+    }
+  }
+  return getLocalExecutives();
+}
+
+export async function saveExecutiveToSupabase(exec: Executive): Promise<Executive> {
+  const current = getLocalExecutives();
+  const idx = current.findIndex(e => e.id === exec.id);
+  const updatedList = idx >= 0 ? [...current] : [...current, exec];
+  if (idx >= 0) updatedList[idx] = exec;
+  saveLocalExecutives(updatedList);
+
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('executives').upsert({
+        id: exec.id,
+        name: exec.name,
+        position: exec.position,
+        tier: exec.tier,
+        state: exec.state || null,
+        lga: exec.lga || null,
+        committee: exec.committee || null,
+        photo_url: exec.photoUrl,
+        email: exec.email,
+        phone: exec.phone,
+        bio: exec.bio,
+        term: exec.term,
+        display_order: exec.order || 0,
+        active: exec.active !== false,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'id' });
+    } catch (e) {
+      console.warn('[Supabase] Error saving executive:', e);
+    }
+  }
+  return exec;
+}
+
+export async function deleteExecutiveFromSupabase(id: string): Promise<void> {
+  const current = getLocalExecutives().filter(e => e.id !== id);
+  saveLocalExecutives(current);
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('executives').delete().eq('id', id);
+    } catch (e) {}
+  }
+}
+
+// --- 6.5 EVENTS (`public.events`) ---
+export async function fetchEventsFromSupabase(): Promise<EventItem[]> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('events')
+        .select('*')
+        .order('date', { ascending: true });
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const mapped: EventItem[] = data.map((r: any) => ({
+          id: r.id,
+          title: r.title,
+          date: r.date,
+          time: r.time || '',
+          location: r.location || '',
+          state: r.state || 'Kano',
+          description: r.description || '',
+          isVirtual: Boolean(r.is_virtual),
+          virtualLink: r.virtual_link || undefined,
+          rsvpCount: Number(r.rsvp_count) || 0,
+          capacity: Number(r.capacity) || 500,
+          qrCode: r.qr_code || '',
+          certificatesEnabled: Boolean(r.certificates_enabled),
+          photos: Array.isArray(r.photos) ? r.photos : [],
+          videos: Array.isArray(r.videos) ? r.videos : [],
+          speakers: Array.isArray(r.speakers) ? r.speakers : []
+        }));
+        saveLocalEvents(mapped);
+        return mapped;
+      }
+    } catch (err) {
+      console.warn('[Supabase] Error fetching events:', err);
+    }
+  }
+  return getLocalEvents();
+}
+
+export async function saveEventToSupabase(event: EventItem): Promise<EventItem> {
+  const current = getLocalEvents();
+  const idx = current.findIndex(e => e.id === event.id);
+  const updatedList = idx >= 0 ? [...current] : [...current, event];
+  if (idx >= 0) updatedList[idx] = event;
+  saveLocalEvents(updatedList);
+
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('events').upsert({
+        id: event.id,
+        title: event.title,
+        date: event.date,
+        time: event.time,
+        location: event.location,
+        state: event.state,
+        description: event.description,
+        is_virtual: event.isVirtual,
+        virtual_link: event.virtualLink || null,
+        rsvp_count: event.rsvpCount,
+        capacity: event.capacity,
+        qr_code: event.qrCode,
+        certificates_enabled: event.certificatesEnabled,
+        photos: event.photos,
+        videos: event.videos,
+        speakers: event.speakers,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'id' });
+    } catch (e) {
+      console.warn('[Supabase] Error saving event:', e);
+    }
+  }
+  return event;
+}
+
+export async function deleteEventFromSupabase(id: string): Promise<void> {
+  const current = getLocalEvents().filter(e => e.id !== id);
+  saveLocalEvents(current);
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('events').delete().eq('id', id);
+    } catch (e) {}
+  }
+}
+
+// --- 6.6 DOCUMENTS (`public.documents`) ---
+export async function fetchDocumentsFromSupabase(): Promise<DocumentItem[]> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('documents')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const mapped: DocumentItem[] = data.map((r: any) => ({
+          id: r.id,
+          title: r.title,
+          category: (r.category as any) || 'Circular',
+          fileUrl: r.file_url,
+          fileSize: r.file_size || '1.0 MB',
+          format: (r.format as any) || 'PDF',
+          minRole: (r.min_role as any) || 'all',
+          uploadDate: r.upload_date || new Date().toISOString().split('T')[0],
+          downloadsCount: Number(r.downloads_count) || 0
+        }));
+        saveLocalDocuments(mapped);
+        return mapped;
+      }
+    } catch (err) {
+      console.warn('[Supabase] Error fetching documents:', err);
+    }
+  }
+  return getLocalDocuments();
+}
+
+export async function saveDocumentToSupabase(doc: DocumentItem): Promise<DocumentItem> {
+  const current = getLocalDocuments();
+  const idx = current.findIndex(d => d.id === doc.id);
+  const updatedList = idx >= 0 ? [...current] : [doc, ...current];
+  if (idx >= 0) updatedList[idx] = doc;
+  saveLocalDocuments(updatedList);
+
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('documents').upsert({
+        id: doc.id,
+        title: doc.title,
+        category: doc.category,
+        file_url: doc.fileUrl,
+        file_size: doc.fileSize,
+        format: doc.format,
+        min_role: doc.minRole,
+        upload_date: doc.uploadDate,
+        downloads_count: doc.downloadsCount,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'id' });
+    } catch (e) {
+      console.warn('[Supabase] Error saving document:', e);
+    }
+  }
+  return doc;
+}
+
+export async function deleteDocumentFromSupabase(id: string): Promise<void> {
+  const current = getLocalDocuments().filter(d => d.id !== id);
+  saveLocalDocuments(current);
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('documents').delete().eq('id', id);
+    } catch (e) {}
+  }
+}
+
+// --- 6.7 GALLERY ALBUMS (`public.gallery_albums`) ---
+export async function fetchGalleryFromSupabase(): Promise<GalleryAlbum[]> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('gallery_albums')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const mapped: GalleryAlbum[] = data.map((r: any) => ({
+          id: r.id,
+          title: r.title,
+          category: r.category || 'General',
+          date: r.date || new Date().toISOString().split('T')[0],
+          coverUrl: r.cover_url || '',
+          photos: Array.isArray(r.photos) ? r.photos : [],
+          videos: Array.isArray(r.videos) ? r.videos : [],
+          description: r.description || ''
+        }));
+        saveLocalGallery(mapped);
+        return mapped;
+      }
+    } catch (err) {
+      console.warn('[Supabase] Error fetching gallery:', err);
+    }
+  }
+  return getLocalGallery();
+}
+
+export async function saveGalleryToSupabase(album: GalleryAlbum): Promise<GalleryAlbum> {
+  const current = getLocalGallery();
+  const idx = current.findIndex(g => g.id === album.id);
+  const updatedList = idx >= 0 ? [...current] : [album, ...current];
+  if (idx >= 0) updatedList[idx] = album;
+  saveLocalGallery(updatedList);
+
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('gallery_albums').upsert({
+        id: album.id,
+        title: album.title,
+        category: album.category,
+        date: album.date,
+        cover_url: album.coverUrl,
+        photos: album.photos,
+        videos: album.videos,
+        description: album.description,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'id' });
+    } catch (e) {
+      console.warn('[Supabase] Error saving gallery album:', e);
+    }
+  }
+  return album;
+}
+
+export async function deleteGalleryFromSupabase(id: string): Promise<void> {
+  const current = getLocalGallery().filter(g => g.id !== id);
+  saveLocalGallery(current);
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('gallery_albums').delete().eq('id', id);
+    } catch (e) {}
+  }
+}
+
+// --- 6.8 CONTACT MESSAGES (`public.contact_messages`) ---
+export async function fetchContactMessagesFromSupabase(): Promise<ContactMessage[]> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('contact_messages')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const mapped: ContactMessage[] = data.map((r: any) => ({
+          id: r.id,
+          name: r.name,
+          email: r.email,
+          phone: r.phone || '',
+          subject: r.subject || '',
+          message: r.message,
+          date: r.date || new Date().toISOString(),
+          status: (r.status as any) || 'unread',
+          reply: r.reply || undefined
+        }));
+        saveLocalContactMessages(mapped);
+        return mapped;
+      }
+    } catch (err) {
+      console.warn('[Supabase] Error fetching contact messages:', err);
+    }
+  }
+  return getLocalContactMessages();
+}
+
+export async function saveContactMessageToSupabase(msg: ContactMessage): Promise<ContactMessage> {
+  const current = getLocalContactMessages();
+  const idx = current.findIndex(m => m.id === msg.id);
+  const updatedList = idx >= 0 ? [...current] : [msg, ...current];
+  if (idx >= 0) updatedList[idx] = msg;
+  saveLocalContactMessages(updatedList);
+
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('contact_messages').upsert({
+        id: msg.id,
+        name: msg.name,
+        email: msg.email,
+        phone: msg.phone,
+        subject: msg.subject,
+        message: msg.message,
+        date: msg.date,
+        status: msg.status,
+        reply: msg.reply || null,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'id' });
+    } catch (e) {
+      console.warn('[Supabase] Error saving contact message:', e);
+    }
+  }
+  return msg;
+}
+
+export async function deleteContactMessageFromSupabase(id: string): Promise<void> {
+  const current = getLocalContactMessages().filter(m => m.id !== id);
+  saveLocalContactMessages(current);
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('contact_messages').delete().eq('id', id);
+    } catch (e) {}
+  }
+}
+
+// --- 6.9 RENEWAL REQUESTS (`public.renewal_requests`) ---
+export async function fetchRenewalsFromSupabase(): Promise<RenewalRequest[]> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('renewal_requests')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const mapped: RenewalRequest[] = data.map((r: any) => ({
+          id: r.id,
+          memberId: r.member_id,
+          fullName: r.full_name,
+          membershipId: r.membership_id,
+          position: r.position || 'Member',
+          passportUrl: r.passport_url || '',
+          signatureUrl: r.signature_url || '',
+          receiptUrl: r.receipt_url || '',
+          state: r.state || '',
+          lga: r.lga || '',
+          requestDate: r.request_date || new Date().toISOString(),
+          status: (r.status as any) || 'Pending',
+          remarks: r.remarks || undefined,
+          rejectionReason: r.rejection_reason || undefined,
+          approvalDate: r.approval_date || undefined,
+          expiryDate: r.expiry_date || undefined,
+          printedCount: Number(r.printed_count) || 0,
+          idCardDesignUrl: r.id_card_design_url || undefined
+        }));
+        saveLocalRenewals(mapped);
+        return mapped;
+      }
+    } catch (err) {
+      console.warn('[Supabase] Error fetching renewal requests:', err);
+    }
+  }
+  return getLocalRenewals();
+}
+
+export async function saveRenewalToSupabase(ren: RenewalRequest): Promise<RenewalRequest> {
+  const current = getLocalRenewals();
+  const idx = current.findIndex(r => r.id === ren.id);
+  const updatedList = idx >= 0 ? [...current] : [ren, ...current];
+  if (idx >= 0) updatedList[idx] = ren;
+  saveLocalRenewals(updatedList);
+
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('renewal_requests').upsert({
+        id: ren.id,
+        member_id: ren.memberId,
+        full_name: ren.fullName,
+        membership_id: ren.membershipId,
+        position: ren.position,
+        passport_url: ren.passportUrl,
+        signature_url: ren.signatureUrl,
+        receipt_url: ren.receiptUrl,
+        state: ren.state,
+        lga: ren.lga,
+        request_date: ren.requestDate,
+        status: ren.status,
+        remarks: ren.remarks || null,
+        rejection_reason: ren.rejectionReason || null,
+        approval_date: ren.approvalDate || null,
+        expiry_date: ren.expiryDate || null,
+        printed_count: ren.printedCount || 0,
+        id_card_design_url: ren.idCardDesignUrl || null,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'id' });
+    } catch (e) {
+      console.warn('[Supabase] Error saving renewal request:', e);
+    }
+  }
+  return ren;
+}
+
+export async function deleteRenewalFromSupabase(id: string): Promise<void> {
+  const current = getLocalRenewals().filter(r => r.id !== id);
+  saveLocalRenewals(current);
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('renewal_requests').delete().eq('id', id);
+    } catch (e) {}
+  }
+}
+
+// --- 6.10 CMS FILES (`public.cms_files`) ---
+export async function fetchCMSFilesFromSupabase(): Promise<CMSFile[]> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('cms_files')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const mapped: CMSFile[] = data.map((r: any) => ({
+          id: r.id,
+          name: r.name,
+          url: r.url,
+          type: (r.type as any) || 'image',
+          size: r.size || '0 KB',
+          uploadedAt: r.uploaded_at || new Date().toISOString(),
+          uploadedBy: r.uploaded_by || 'Admin'
+        }));
+        saveLocalCMSFiles(mapped);
+        return mapped;
+      }
+    } catch (err) {
+      console.warn('[Supabase] Error fetching CMS files:', err);
+    }
+  }
+  return getLocalCMSFiles();
+}
+
+export async function saveCMSFileToSupabase(file: CMSFile): Promise<CMSFile> {
+  const current = getLocalCMSFiles();
+  const idx = current.findIndex(f => f.id === file.id);
+  const updatedList = idx >= 0 ? [...current] : [file, ...current];
+  if (idx >= 0) updatedList[idx] = file;
+  saveLocalCMSFiles(updatedList);
+
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('cms_files').upsert({
+        id: file.id,
+        name: file.name,
+        url: file.url,
+        type: file.type,
+        size: file.size,
+        uploaded_at: file.uploadedAt,
+        uploaded_by: file.uploadedBy
+      }, { onConflict: 'id' });
+    } catch (e) {
+      console.warn('[Supabase] Error saving CMS file:', e);
+    }
+  }
+  return file;
+}
+
+export async function deleteCMSFileFromSupabase(id: string): Promise<void> {
+  const current = getLocalCMSFiles().filter(f => f.id !== id);
+  saveLocalCMSFiles(current);
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('cms_files').delete().eq('id', id);
+    } catch (e) {}
+  }
+}
+
+// --- 6.11 AUDIT LOGS (`public.audit_logs`) ---
+export async function fetchAuditLogsFromSupabase(): Promise<AuditLog[]> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('audit_logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(200);
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const mapped: AuditLog[] = data.map((r: any) => ({
+          id: r.id,
+          timestamp: r.timestamp || r.created_at || new Date().toISOString(),
+          actorName: r.actor_name,
+          actorRole: r.actor_role,
+          action: r.action,
+          details: r.details,
+          ipAddress: r.ip_address || 'Client',
+          deviceInfo: r.device_info || 'Web Browser'
+        }));
+        return mapped;
+      }
+    } catch (err) {
+      console.warn('[Supabase] Error fetching audit logs:', err);
+    }
+  }
+  return getLocalAuditLogs();
+}
+
+// --- 6.12 NOTIFICATIONS (`public.notifications`) ---
+export async function fetchNotificationsFromSupabase(): Promise<NotificationItem[]> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('notifications')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(100);
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const mapped: NotificationItem[] = data.map((n: any) => ({
+          id: n.id,
+          title: n.title,
+          message: n.message,
+          timestamp: n.created_at || new Date().toISOString(),
+          type: n.type || 'info',
+          read: n.read || false
+        }));
+        return mapped;
+      }
+    } catch (err) {
+      console.warn('[Supabase] Error fetching notifications:', err);
+    }
+  }
+  return getLocalNotifications();
+}
+
 export function subscribeToCollection<T extends { id: string }>(
   collectionName: string,
   initialData: T[],
@@ -1954,6 +3029,32 @@ export async function saveItemToCollection<T extends { id: string }>(
     else list.unshift(item);
     localStorage.setItem(localKey, JSON.stringify(list));
   } catch (e) {}
+
+  if (isSupabaseConfigured()) {
+    try {
+      if (collectionName === 'announcements') {
+        await saveAnnouncementToSupabase(item as any);
+      } else if (collectionName === 'news' || collectionName === 'news_articles') {
+        await saveNewsToSupabase(item as any);
+      } else if (collectionName === 'executives') {
+        await saveExecutiveToSupabase(item as any);
+      } else if (collectionName === 'events') {
+        await saveEventToSupabase(item as any);
+      } else if (collectionName === 'documents') {
+        await saveDocumentToSupabase(item as any);
+      } else if (collectionName === 'gallery' || collectionName === 'gallery_albums') {
+        await saveGalleryToSupabase(item as any);
+      } else if (collectionName === 'contact_messages' || collectionName === 'contact') {
+        await saveContactMessageToSupabase(item as any);
+      } else if (collectionName === 'renewals' || collectionName === 'renewal_requests') {
+        await saveRenewalToSupabase(item as any);
+      } else if (collectionName === 'cms_files' || collectionName === 'cms') {
+        await saveCMSFileToSupabase(item as any);
+      }
+    } catch (e) {
+      console.warn(`[Supabase] saveItemToCollection error for ${collectionName}:`, e);
+    }
+  }
 }
 
 export async function deleteItemFromCollection(
@@ -1969,6 +3070,34 @@ export async function deleteItemFromCollection(
       localStorage.setItem(localKey, JSON.stringify(list));
     }
   } catch (e) {}
+
+  if (isSupabaseConfigured()) {
+    try {
+      if (collectionName === 'payments') {
+        await deletePaymentFromSupabase(id);
+      } else if (collectionName === 'announcements') {
+        await deleteAnnouncementFromSupabase(id);
+      } else if (collectionName === 'news' || collectionName === 'news_articles') {
+        await deleteNewsFromSupabase(id);
+      } else if (collectionName === 'executives') {
+        await deleteExecutiveFromSupabase(id);
+      } else if (collectionName === 'events') {
+        await deleteEventFromSupabase(id);
+      } else if (collectionName === 'documents') {
+        await deleteDocumentFromSupabase(id);
+      } else if (collectionName === 'gallery' || collectionName === 'gallery_albums') {
+        await deleteGalleryFromSupabase(id);
+      } else if (collectionName === 'contact_messages' || collectionName === 'contact') {
+        await deleteContactMessageFromSupabase(id);
+      } else if (collectionName === 'renewals' || collectionName === 'renewal_requests') {
+        await deleteRenewalFromSupabase(id);
+      } else if (collectionName === 'cms_files' || collectionName === 'cms') {
+        await deleteCMSFileFromSupabase(id);
+      }
+    } catch (e) {
+      console.warn(`[Supabase] deleteItemFromCollection error for ${collectionName}:`, e);
+    }
+  }
 }
 
 export const fetchSQLiteDiagnostics = fetchSupabaseDiagnostics;

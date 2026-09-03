@@ -115,7 +115,7 @@ export const PublicHome: React.FC<PublicHomeProps> = ({
     },
     {
       q: 'How can the public verify if an electrical practitioner is approved by N-NEPEF?',
-      a: 'Use our public "Verify Member" tool on this website. Simply enter the engineer\'s Name or Membership ID. Only active, approved members will be displayed along with their specialization and position, strictly protecting sensitive personal data like NIN or phone numbers.'
+      a: 'Use our public "Verify Member" tool on this website. Simply enter the practitioner\'s Official Membership Number (e.g. NNEPEF/KN/0001) and Registered Phone Number. Only active, approved members will be verified along with their specialization and position, while strictly protecting sensitive confidential data like NIN, residential address, or payment records.'
     },
     {
       q: 'What are the benefits of N-NEPEF membership?',

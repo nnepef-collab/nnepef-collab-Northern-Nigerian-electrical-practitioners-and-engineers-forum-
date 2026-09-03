@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ForumSettings, FeeCategory, BankAccount } from '../types';
-import { getLocalBankAccounts, saveLocalBankAccounts } from '../services/localDatabaseService';
+import { saveBankAccountToSupabase, deleteBankAccountFromSupabase, fetchBankAccountsFromSupabase } from '../services/supabaseService';
 import { 
   Settings, 
   CreditCard, 
@@ -78,11 +78,17 @@ export const PaymentSettingsManager: React.FC<PaymentSettingsManagerProps> = ({
     ]
   );
 
-  // Bank Accounts State - Initialized from Authoritative Local Storage
-  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>(() => getLocalBankAccounts());
+  // Bank Accounts State - Initialized from Settings & Supabase
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>(() => settings.bankAccounts || []);
 
   useEffect(() => {
-    setBankAccounts(getLocalBankAccounts());
+    if (settings.bankAccounts && settings.bankAccounts.length > 0) {
+      setBankAccounts(settings.bankAccounts);
+    } else {
+      fetchBankAccountsFromSupabase().then(accs => {
+        if (accs && accs.length > 0) setBankAccounts(accs);
+      });
+    }
   }, [settings.bankAccounts]);
 
   const [paymentInstructions, setPaymentInstructions] = useState<string>(
@@ -264,14 +270,16 @@ export const PaymentSettingsManager: React.FC<PaymentSettingsManagerProps> = ({
 
     setBankFormData({ bankName: '', accountName: '', accountNumber: '', branch: '', paymentInstructions: '', notes: '' });
 
-    // Sync authoritative bank accounts and settings immediately
-    const verifiedAccounts = saveLocalBankAccounts(updatedList);
-    setBankAccounts(verifiedAccounts);
+    // Sync authoritative bank accounts and settings immediately to Supabase
+    setBankAccounts(updatedList);
+    for (const acc of updatedList) {
+      saveBankAccountToSupabase(acc);
+    }
 
-    const activeBank = verifiedAccounts.find(b => b.isActive) || (verifiedAccounts.length > 0 ? verifiedAccounts[0] : null);
+    const activeBank = updatedList.find(b => b.isActive) || (updatedList.length > 0 ? updatedList[0] : null);
     onUpdateSettings({
       ...settings,
-      bankAccounts: verifiedAccounts,
+      bankAccounts: updatedList,
       bankName: activeBank ? activeBank.bankName : '',
       bankAccountName: activeBank ? activeBank.accountName : '',
       bankAccountNumber: activeBank ? activeBank.accountNumber : '',
@@ -279,7 +287,7 @@ export const PaymentSettingsManager: React.FC<PaymentSettingsManagerProps> = ({
     });
   };
 
-  const handleDeleteBank = (bankId: string) => {
+  const handleDeleteBank = async (bankId: string) => {
     const target = bankAccounts.find(b => b.id === bankId);
     if (!target) return;
 
@@ -288,18 +296,18 @@ export const PaymentSettingsManager: React.FC<PaymentSettingsManagerProps> = ({
       if (target.isActive && remaining.length > 0) {
         remaining[0].isActive = true;
       }
-      const verifiedRemaining = saveLocalBankAccounts(remaining);
-      setBankAccounts(verifiedRemaining);
+      await deleteBankAccountFromSupabase(bankId);
+      setBankAccounts(remaining);
 
       onAddAuditLog(
         'BANK_ACCOUNT_DELETE',
         `Admin (${currentAdminName}) deleted bank account: ${target.bankName} (${target.accountNumber}).`
       );
 
-      const activeBank = verifiedRemaining.find(b => b.isActive) || (verifiedRemaining.length > 0 ? verifiedRemaining[0] : null);
+      const activeBank = remaining.find(b => b.isActive) || (remaining.length > 0 ? remaining[0] : null);
       onUpdateSettings({
         ...settings,
-        bankAccounts: verifiedRemaining,
+        bankAccounts: remaining,
         bankName: activeBank ? activeBank.bankName : '',
         bankAccountName: activeBank ? activeBank.accountName : '',
         bankAccountNumber: activeBank ? activeBank.accountNumber : ''
@@ -311,7 +319,7 @@ export const PaymentSettingsManager: React.FC<PaymentSettingsManagerProps> = ({
   const handleSaveAllSettings = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
 
-    const currentAccounts = getLocalBankAccounts();
+    const currentAccounts = bankAccounts;
     const activeBank = currentAccounts.find(b => b.isActive) || (currentAccounts.length > 0 ? currentAccounts[0] : null);
 
     // Build previous values report for Audit Trail

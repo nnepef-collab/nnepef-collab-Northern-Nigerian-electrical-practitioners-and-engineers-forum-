@@ -41,7 +41,6 @@ import {
   savePaymentToSupabase,
   deletePaymentFromSupabase
 } from '../services/supabaseService';
-import { getLocalBankAccounts, saveLocalBankAccounts } from '../services/localDatabaseService';
 
 interface FeesAndRevenueManagerProps {
   settings: ForumSettings;
@@ -123,7 +122,7 @@ export const FeesAndRevenueManager: React.FC<FeesAndRevenueManagerProps> = ({
   }, []);
 
   // Bank Accounts State
-  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>(() => getLocalBankAccounts());
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>(() => settings.bankAccounts || []);
 
   useEffect(() => {
     fetchBankAccountsFromSupabase().then((data) => {
@@ -582,7 +581,6 @@ export const FeesAndRevenueManager: React.FC<FeesAndRevenueManagerProps> = ({
       isActive: b.id === bankId
     }));
     setBankAccounts(updated);
-    saveLocalBankAccounts(updated);
 
     const activeBank = updated.find((b) => b.id === bankId);
     if (activeBank) {
@@ -662,16 +660,15 @@ export const FeesAndRevenueManager: React.FC<FeesAndRevenueManagerProps> = ({
       notes: ''
     });
 
-    const verifiedAccounts = saveLocalBankAccounts(updatedList);
-    setBankAccounts(verifiedAccounts);
+    setBankAccounts(updatedList);
 
     const activeBank =
-      verifiedAccounts.find((b) => b.isActive) ||
-      (verifiedAccounts.length > 0 ? verifiedAccounts[0] : null);
+      updatedList.find((b) => b.isActive) ||
+      (updatedList.length > 0 ? updatedList[0] : null);
 
     onUpdateSettings({
       ...settings,
-      bankAccounts: verifiedAccounts,
+      bankAccounts: updatedList,
       bankName: activeBank ? activeBank.bankName : '',
       bankAccountName: activeBank ? activeBank.accountName : '',
       bankAccountNumber: activeBank ? activeBank.accountNumber : '',
@@ -697,7 +694,6 @@ export const FeesAndRevenueManager: React.FC<FeesAndRevenueManagerProps> = ({
         remaining[0].isActive = true;
       }
       setBankAccounts(remaining);
-      saveLocalBankAccounts(remaining);
       await deleteBankAccountFromSupabase(bankId);
 
       onAddAuditLog(

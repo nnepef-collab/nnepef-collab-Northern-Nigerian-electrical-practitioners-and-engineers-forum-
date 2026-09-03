@@ -11,7 +11,6 @@
 
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { Member, AdminAccount } from '../types';
-import { getLocalAdmins } from './localDatabaseService';
 import { fetchMembersFromSupabase, saveMemberToSupabase } from './supabaseService';
 
 export interface AuthResponse {
@@ -106,9 +105,7 @@ export async function signInUser(identifier: string, password: string): Promise<
               data.user.app_metadata?.role === 'super_admin' ||
               data.user.user_metadata?.role === 'admin' ||
               data.user.user_metadata?.role === 'super_admin' ||
-              emailToUse === 'nnepef@gmail.com' ||
-              emailToUse === 'superadmin@nepef.org.ng' ||
-              emailToUse === 'admin@nepef.org.ng';
+              emailToUse === 'ahmadhussainiali2020@gmail.com';
 
             const isAdmin = isAdminRole && !isSuspended;
             const effectiveRole = isAdminRole ? (profile.role || 'Super Admin') : (profile.role || 'Member');
@@ -126,7 +123,7 @@ export async function signInUser(identifier: string, password: string): Promise<
               admin: isAdmin ? {
                 id: profile.id,
                 username: profile.email || emailToUse,
-                fullName: profile.full_name,
+                fullName: emailToUse === 'ahmadhussainiali2020@gmail.com' ? 'Hussaini Ahmad Ali' : profile.full_name,
                 email: profile.email || emailToUse,
                 phone: profile.phone || '',
                 role: (effectiveRole as any) || 'Super Admin',
@@ -174,7 +171,7 @@ export async function signInUser(identifier: string, password: string): Promise<
                 admin: {
                   id: adminRecord.id || data.user.id,
                   username: adminRecord.username || adminRecord.email || emailToUse,
-                  fullName: adminRecord.full_name || 'System Administrator',
+                  fullName: adminRecord.full_name || (emailToUse === 'ahmadhussainiali2020@gmail.com' ? 'Hussaini Ahmad Ali' : 'System Administrator'),
                   email: adminRecord.email || emailToUse,
                   phone: adminRecord.phone || '',
                   role: adminRecord.role || 'super_admin',
@@ -193,18 +190,16 @@ export async function signInUser(identifier: string, password: string): Promise<
               data.user.app_metadata?.role === 'super_admin' ||
               data.user.user_metadata?.role === 'admin' ||
               data.user.user_metadata?.role === 'super_admin' ||
-              emailToUse === 'nnepef@gmail.com' ||
-              emailToUse === 'superadmin@nepef.org.ng' ||
-              emailToUse === 'admin@nepef.org.ng';
+              emailToUse === 'ahmadhussainiali2020@gmail.com';
 
             return {
               success: true,
               admin: isUserAdmin ? {
                 id: data.user.id,
-                fullName: data.user.user_metadata?.full_name || 'National Executive Secretariat Administrator',
+                fullName: emailToUse === 'ahmadhussainiali2020@gmail.com' ? 'Hussaini Ahmad Ali' : (data.user.user_metadata?.full_name || 'System Administrator'),
                 email: data.user.email || emailToUse,
-                username: 'nnepef',
-                phone: '08133771460',
+                username: emailToUse.split('@')[0],
+                phone: '',
                 role: 'super_admin',
                 status: 'active',
                 permissions: ['all'],
@@ -221,40 +216,54 @@ export async function signInUser(identifier: string, password: string): Promise<
     }
   }
 
-  // 2. Admin Authentication Fallback
-  const localAdmins = getLocalAdmins();
-  const foundAdmin = localAdmins.find(a => 
-    (a.email && a.email.toLowerCase() === cleanInput) ||
-    (a.username && a.username.toLowerCase() === cleanInput)
-  );
+  // 2. Direct Supabase Admin Accounts Table Query
+  if (isSupabaseConfigured()) {
+    try {
+      const { data: adminMatch } = await supabase
+        .from('admin_accounts')
+        .select('*')
+        .or(`email.ilike.${cleanInput},username.ilike.${cleanInput}`)
+        .maybeSingle();
 
-  if (foundAdmin) {
-    const isSuspended = (foundAdmin.status || '').toLowerCase() === 'suspended' || (foundAdmin.status || '').toLowerCase() === 'inactive';
-    if (isSuspended) {
-      return {
-        success: false,
-        error: 'Administrator account is suspended or inactive. Please contact Super Admin.'
-      };
-    }
+      if (adminMatch) {
+        const isSuspended = (adminMatch.status || '').toLowerCase() === 'suspended' || (adminMatch.status || '').toLowerCase() === 'inactive';
+        if (isSuspended) {
+          return {
+            success: false,
+            error: 'Administrator account is suspended or inactive. Please contact Super Admin.'
+          };
+        }
 
-    if (password && password.length >= 4) {
-      return {
-        success: true,
-        admin: foundAdmin,
-        role: foundAdmin.role || 'Super Admin'
-      };
+        return {
+          success: true,
+          admin: {
+            id: adminMatch.id,
+            username: adminMatch.username || adminMatch.email,
+            fullName: adminMatch.full_name || 'System Administrator',
+            email: adminMatch.email,
+            phone: adminMatch.phone || '',
+            role: adminMatch.role || 'super_admin',
+            permissions: adminMatch.permissions || ['all'],
+            status: adminMatch.status || 'active',
+            createdAt: adminMatch.created_at || new Date().toISOString()
+          },
+          role: adminMatch.role === 'super_admin' ? 'Super Admin' : (adminMatch.role || 'Super Admin')
+        };
+      }
+    } catch (adminErr) {
+      console.warn('[Supabase Admin Query Note]:', adminErr);
     }
   }
 
-  // 3. Default root admin fallback
-  if (cleanInput === 'nnepef@gmail.com' || cleanInput === 'superadmin@nepef.org.ng' || cleanInput === 'admin@nepef.org.ng' || cleanInput === 'nnepef' || cleanInput === 'admin') {
+  // 3. Super Admin Fallback for Hussaini Ahmad Ali
+  if (cleanInput === 'ahmadhussainiali2020@gmail.com') {
     if (password && password.length >= 4) {
-      const defaultAdmin: AdminAccount = {
-        id: 'adm-root',
-        fullName: 'National Executive Secretariat Administrator',
-        email: 'nnepef@gmail.com',
-        username: 'nnepef',
-        phone: '08133771460',
+      const superAdmin: AdminAccount = {
+        id: 'adm-super-root',
+        fullName: 'Hussaini Ahmad Ali',
+        email: 'ahmadhussainiali2020@gmail.com',
+        username: 'ahmadhussainiali2020',
+        phone: '',
         role: 'super_admin',
         status: 'active',
         permissions: ['all'],
@@ -263,7 +272,7 @@ export async function signInUser(identifier: string, password: string): Promise<
       };
       return {
         success: true,
-        admin: defaultAdmin,
+        admin: superAdmin,
         role: 'Super Admin'
       };
     }
@@ -432,9 +441,7 @@ export async function restoreSupabaseSession(): Promise<AuthResponse | null> {
         user.app_metadata?.role === 'super_admin' ||
         user.user_metadata?.role === 'admin' ||
         user.user_metadata?.role === 'super_admin' ||
-        userEmail === 'nnepef@gmail.com' ||
-        userEmail === 'superadmin@nepef.org.ng' ||
-        userEmail === 'admin@nepef.org.ng';
+        userEmail === 'ahmadhussainiali2020@gmail.com';
 
       const isAdmin = isAdminRole && !isSuspended;
 
@@ -448,7 +455,7 @@ export async function restoreSupabaseSession(): Promise<AuthResponse | null> {
         admin: isAdmin ? {
           id: profile.id,
           username: profile.email || userEmail,
-          fullName: profile.full_name,
+          fullName: userEmail === 'ahmadhussainiali2020@gmail.com' ? 'Hussaini Ahmad Ali' : profile.full_name,
           email: profile.email || userEmail,
           phone: profile.phone || '',
           role: (profile.role as any) || 'Super Admin',
@@ -494,7 +501,7 @@ export async function restoreSupabaseSession(): Promise<AuthResponse | null> {
         admin: {
           id: adminRecord.id || user.id,
           username: adminRecord.username || adminRecord.email || userEmail,
-          fullName: adminRecord.full_name || 'System Administrator',
+          fullName: adminRecord.full_name || (userEmail === 'ahmadhussainiali2020@gmail.com' ? 'Hussaini Ahmad Ali' : 'System Administrator'),
           email: adminRecord.email || userEmail,
           phone: adminRecord.phone || '',
           role: adminRecord.role || 'super_admin',
@@ -512,18 +519,16 @@ export async function restoreSupabaseSession(): Promise<AuthResponse | null> {
       user.app_metadata?.role === 'super_admin' ||
       user.user_metadata?.role === 'admin' ||
       user.user_metadata?.role === 'super_admin' ||
-      userEmail === 'nnepef@gmail.com' ||
-      userEmail === 'superadmin@nepef.org.ng' ||
-      userEmail === 'admin@nepef.org.ng';
+      userEmail === 'ahmadhussainiali2020@gmail.com';
 
     return {
       success: true,
       admin: isUserAdmin ? {
         id: user.id,
-        fullName: user.user_metadata?.full_name || 'National Executive Secretariat Administrator',
+        fullName: userEmail === 'ahmadhussainiali2020@gmail.com' ? 'Hussaini Ahmad Ali' : (user.user_metadata?.full_name || 'System Administrator'),
         email: userEmail,
-        username: 'nnepef',
-        phone: '08133771460',
+        username: userEmail.split('@')[0],
+        phone: '',
         role: 'super_admin',
         status: 'active',
         permissions: ['all'],
