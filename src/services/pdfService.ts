@@ -7,30 +7,38 @@ import { OFFICIAL_SECRETARY_SIGNATURE } from '../constants/signature';
 /**
  * Safely loads an image as base64 data URL for embedding into jsPDF
  */
-async function getBase64ImageFromUrl(url: string | undefined | null): Promise<string | null> {
-  if (!url || typeof url !== 'string' || !url.trim() || url === 'undefined' || url === 'null') {
-    return null;
-  }
-  const cleanUrl = url.trim();
-  if (cleanUrl.startsWith('data:image/')) {
-    return cleanUrl;
-  }
+async function getBase64ImageFromUrl(url: string | undefined | null, fallbacks: string[] = []): Promise<string | null> {
+  const candidates = [url, ...fallbacks].filter((u): u is string => Boolean(u && typeof u === 'string' && u.trim() && u !== 'undefined' && u !== 'null'));
+  if (candidates.length === 0) return null;
 
-  try {
-    const response = await fetch(cleanUrl, { mode: 'cors', cache: 'no-cache' });
-    if (response.ok) {
-      const blob = await response.blob();
-      return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          resolve(reader.result as string);
-        };
-        reader.onerror = () => resolve(null);
-        reader.readAsDataURL(blob);
-      });
+  for (const candidate of candidates) {
+    const cleanUrl = candidate.trim();
+    if (cleanUrl.startsWith('data:image/')) {
+      return cleanUrl;
     }
-  } catch (e) {
-    console.warn('[PDF Service] Error fetching image for PDF:', e);
+
+    try {
+      const fullUrl = cleanUrl.startsWith('http://') || cleanUrl.startsWith('https://')
+        ? cleanUrl
+        : (typeof window !== 'undefined' && window.location ? `${window.location.origin}${cleanUrl.startsWith('/') ? cleanUrl : '/' + cleanUrl}` : cleanUrl);
+      const response = await fetch(fullUrl, { mode: 'cors', cache: 'no-cache' });
+      if (response.ok) {
+        const blob = await response.blob();
+        const base64 = await new Promise<string | null>((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            resolve(reader.result as string);
+          };
+          reader.onerror = () => resolve(null);
+          reader.readAsDataURL(blob);
+        });
+        if (base64 && base64.startsWith('data:image/')) {
+          return base64;
+        }
+      }
+    } catch (e) {
+      console.warn('[PDF Service] Error fetching image for PDF:', candidate, e);
+    }
   }
 
   return null;
@@ -60,10 +68,16 @@ export async function downloadMemberProfilePdf(member: Member, settings?: ForumS
   currentY = 16;
 
   // 2. Official Header with Logo
-  const logoData = await getBase64ImageFromUrl(settings?.logoUrl || OFFICIAL_NNEPEF_LOGO);
+  const logoData = await getBase64ImageFromUrl(settings?.logoUrl || OFFICIAL_NNEPEF_LOGO, [
+    OFFICIAL_NNEPEF_LOGO,
+    '/logo.png',
+    '/logo.jpg',
+    '/nnepef-logo.png'
+  ]);
   if (logoData) {
     try {
-      doc.addImage(logoData, 'PNG', margin, currentY, 20, 20);
+      const format = logoData.includes('image/jpeg') ? 'JPEG' : 'PNG';
+      doc.addImage(logoData, format, margin, currentY, 20, 20);
     } catch (e) {
       console.warn('[PDF Service] Logo render fallback:', e);
     }
@@ -475,10 +489,16 @@ export async function downloadApprovalSlipPdf(member: Member, settings?: ForumSe
   currentY = 18;
 
   // 2. Header: Logo + Organization Title + Info
-  const logoData = await getBase64ImageFromUrl(settings?.logoUrl || OFFICIAL_NNEPEF_LOGO);
+  const logoData = await getBase64ImageFromUrl(settings?.logoUrl || OFFICIAL_NNEPEF_LOGO, [
+    OFFICIAL_NNEPEF_LOGO,
+    '/logo.png',
+    '/logo.jpg',
+    '/nnepef-logo.png'
+  ]);
   if (logoData) {
     try {
-      doc.addImage(logoData, 'PNG', margin, currentY, 22, 22);
+      const format = logoData.includes('image/jpeg') ? 'JPEG' : 'PNG';
+      doc.addImage(logoData, format, margin, currentY, 22, 22);
     } catch (e) {
       console.warn('[PDF Service] Logo render fallback:', e);
     }
@@ -675,10 +695,15 @@ export async function downloadApprovalSlipPdf(member: Member, settings?: ForumSe
   const sigBoxX = pageWidth - margin - 60;
   const sigBoxY = currentY + 4;
 
-  const sigData = await getBase64ImageFromUrl(OFFICIAL_SECRETARY_SIGNATURE);
+  const sigData = await getBase64ImageFromUrl(OFFICIAL_SECRETARY_SIGNATURE, [
+    OFFICIAL_SECRETARY_SIGNATURE,
+    '/secretary-signature.png',
+    '/secretary-signature.jpg'
+  ]);
   if (sigData) {
     try {
-      doc.addImage(sigData, 'JPEG', sigBoxX + 2, sigBoxY, 44, 20);
+      const sigFormat = sigData.includes('image/jpeg') ? 'JPEG' : 'PNG';
+      doc.addImage(sigData, sigFormat, sigBoxX + 2, sigBoxY, 44, 20);
     } catch (e) {
       console.warn('[PDF Service] Signature render error:', e);
     }

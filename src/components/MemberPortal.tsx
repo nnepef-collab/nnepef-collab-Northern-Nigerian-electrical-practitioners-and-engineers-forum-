@@ -11,6 +11,8 @@ import { signOutUser } from '../services/supabaseAuthService';
 import { fetchApprovedMemberById, isSupabaseConfigured } from '../services/supabaseService';
 import { handleImageError, getValidImageUrl, downloadFileSafely } from '../utils/imageHelpers';
 import { downloadApprovalSlipPdf } from '../services/pdfService';
+import { OFFICIAL_NNEPEF_LOGO } from '../constants/logo';
+import { OFFICIAL_SECRETARY_SIGNATURE } from '../constants/signature';
 import { 
   User, 
   CreditCard, 
@@ -36,7 +38,8 @@ import {
   Cloud,
   RefreshCw,
   FileCheck,
-  Printer
+  Printer,
+  Loader2
 } from 'lucide-react';
 
 interface MemberPortalProps {
@@ -68,9 +71,14 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'id-card' | 'approval-slip' | 'profile' | 'renew-card' | 'events' | 'announcements' | 'payments' | 'downloads' | 'support'>('dashboard');
   const [showSlipModal, setShowSlipModal] = useState(false);
+  const [isDownloadingSlipPdf, setIsDownloadingSlipPdf] = useState(false);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [isSyncingWithSupabase, setIsSyncingWithSupabase] = useState(false);
   const [lastSyncedTime, setLastSyncedTime] = useState<string | null>(null);
+
+  const slipLogo = settings?.logoUrl && settings.logoUrl.trim() !== '' && settings.logoUrl !== '/logo.png'
+    ? settings.logoUrl
+    : OFFICIAL_NNEPEF_LOGO;
 
   const [profileForm, setProfileForm] = useState({
     phone: currentUser.phone,
@@ -402,35 +410,102 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
               <h3 className="font-display font-bold text-xl text-slate-900 dark:text-white">Official Membership Approval Slip</h3>
               <p className="text-xs text-slate-500">Certified N-NEPEF 2020 credential bearing the authentic Secretary General digital endorsement</p>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <span className="text-xs text-slate-500 font-mono hidden sm:inline mr-1">Choose Action:</span>
               <button
-                onClick={() => setShowSlipModal(true)}
-                className="px-4 py-2 rounded-xl bg-[#0A2E73] hover:bg-sky-900 text-white font-bold text-xs flex items-center gap-1.5 shadow transition-all"
-              >
-                <Printer className="w-3.5 h-3.5" />
-                <span>Open Full Slip &amp; Print</span>
-              </button>
-              <button
+                type="button"
                 onClick={async () => {
+                  setIsDownloadingSlipPdf(true);
                   try {
                     await downloadApprovalSlipPdf(currentUser, settings);
                   } catch (e) {
                     console.warn(e);
                     setShowSlipModal(true);
+                  } finally {
+                    setIsDownloadingSlipPdf(false);
                   }
                 }}
-                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 shadow transition-all"
+                disabled={isDownloadingSlipPdf}
+                className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-75 text-white font-bold text-xs flex items-center gap-2 shadow-md transition-all cursor-pointer active:scale-95"
+                title="Download Official Slip as PDF document"
               >
-                <Download className="w-3.5 h-3.5" />
-                <span>Download PDF Slip</span>
+                {isDownloadingSlipPdf ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-emerald-200" />
+                ) : (
+                  <Download className="w-4 h-4 text-emerald-200" />
+                )}
+                <span>{isDownloadingSlipPdf ? 'Downloading PDF...' : 'Download PDF Slip'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowSlipModal(true)}
+                className="px-4 py-2.5 rounded-xl bg-[#0A2E73] hover:bg-sky-900 text-white font-bold text-xs flex items-center gap-2 shadow-md transition-all cursor-pointer active:scale-95"
+                title="Open Official Slip to Print or Save as PDF"
+              >
+                <Printer className="w-4 h-4 text-[#2EA3F2]" />
+                <span>Print Official Slip</span>
               </button>
             </div>
           </div>
 
           {currentUser.status === 'approved' || (currentUser.status as string) === 'Active' ? (
-            <div className="bg-slate-50 dark:bg-slate-900/60 p-6 sm:p-8 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-6">
-              <div className="flex flex-col md:flex-row items-start gap-6">
-                <div className="w-28 h-32 rounded-xl overflow-hidden border-2 border-[#0A2E73] shadow bg-slate-200 flex-shrink-0">
+            <div className="bg-white dark:bg-slate-900 p-6 sm:p-8 rounded-3xl border-2 border-slate-200 dark:border-slate-700 shadow-xl space-y-6 relative overflow-hidden">
+              {/* Top Decorative Brand Bar */}
+              <div className="absolute top-0 left-0 right-0 h-2 bg-gradient-to-r from-[#0A2E73] via-[#2EA3F2] to-[#0A2E73]" />
+
+              {/* Security Watermark in Background */}
+              <div className="absolute inset-0 pointer-events-none flex items-center justify-center opacity-[0.04] dark:opacity-[0.03]">
+                <img src={slipLogo} alt="" className="w-96 h-96 object-contain" />
+              </div>
+
+              {/* Header: Logo, Organization Title, Motto */}
+              <div className="relative flex flex-col sm:flex-row items-center sm:items-start justify-between border-b-2 border-slate-800 dark:border-slate-700 pb-5 gap-4">
+                <div className="flex items-center gap-4 text-center sm:text-left">
+                  <img
+                    src={slipLogo}
+                    alt="N-NEPEF Logo"
+                    className="w-16 h-16 sm:w-20 sm:h-20 object-contain flex-shrink-0"
+                    onError={(e) => {
+                      const target = e.currentTarget;
+                      if (target.src !== OFFICIAL_NNEPEF_LOGO) target.src = OFFICIAL_NNEPEF_LOGO;
+                    }}
+                  />
+                  <div>
+                    <h4 className="font-extrabold text-lg sm:text-xl text-[#0A2E73] dark:text-sky-400 uppercase tracking-tight font-serif leading-tight">
+                      {settings?.forumName || 'N-NEPEF 2020'}
+                    </h4>
+                    <p className="text-[11px] sm:text-xs font-bold text-slate-800 dark:text-slate-200 tracking-wide uppercase">
+                      Northern Nigerian Electrical Practitioners and Engineers Forum
+                    </p>
+                    <p className="text-[10px] text-amber-700 dark:text-amber-400 font-bold uppercase tracking-widest">
+                      Unity • Professionalism • Excellence
+                    </p>
+                    <p className="text-[9px] text-slate-500 dark:text-slate-400 font-mono pt-1">
+                      National Secretariat: {settings?.headquarters || 'No. 2 Gwarzo Road, Kano State, Nigeria'} • +234 906 343 5546
+                    </p>
+                  </div>
+                </div>
+                <div className="flex flex-col items-center sm:items-end gap-1.5 flex-shrink-0">
+                  <span className="px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 font-extrabold text-[10px] flex items-center gap-1.5 border border-emerald-300 dark:border-emerald-800">
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                    <span>OFFICIALLY APPROVED</span>
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                    ID: {currentUser.membershipId || 'PENDING'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Slip Title Ribbon */}
+              <div className="relative py-2 px-4 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-center">
+                <span className="font-display font-black text-xs sm:text-sm tracking-widest text-[#0A2E73] dark:text-sky-400 uppercase">
+                  Official Membership Approval &amp; Registration Slip
+                </span>
+              </div>
+
+              {/* Member Profile Grid */}
+              <div className="relative flex flex-col md:flex-row items-start gap-6">
+                <div className="w-28 h-36 rounded-2xl overflow-hidden border-2 border-[#0A2E73] dark:border-sky-500 shadow-md bg-slate-200 dark:bg-slate-800 flex-shrink-0 mx-auto md:mx-0">
                   <img
                     src={getValidImageUrl(currentUser.passportUrl || currentUser.passportPhotoUrl, 'avatar')}
                     alt={currentUser.fullName}
@@ -438,19 +513,19 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
                     onError={(e) => handleImageError(e, 'avatar')}
                   />
                 </div>
-                <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs w-full">
                   <div>
-                    <span className="text-[10px] font-mono text-slate-500 uppercase block">Approved Member</span>
+                    <span className="text-[10px] font-mono text-slate-500 uppercase block">Full Member Name</span>
                     <p className="font-extrabold text-base text-slate-900 dark:text-white uppercase">{currentUser.fullName}</p>
                   </div>
                   <div>
-                    <span className="text-[10px] font-mono text-slate-500 uppercase block">Membership ID</span>
-                    <p className="font-mono font-extrabold text-sm text-[#0A2E73] dark:text-sky-400 bg-sky-50 dark:bg-sky-950/60 px-2 py-0.5 rounded border border-sky-200 dark:border-sky-800 inline-block">
+                    <span className="text-[10px] font-mono text-slate-500 uppercase block">Official Membership ID</span>
+                    <p className="font-mono font-extrabold text-sm text-[#0A2E73] dark:text-sky-400 bg-sky-50 dark:bg-sky-950/60 px-2.5 py-1 rounded-lg border border-sky-200 dark:border-sky-800 inline-block">
                       {currentUser.membershipId || 'PENDING ASSIGNMENT'}
                     </p>
                   </div>
                   <div>
-                    <span className="text-[10px] font-mono text-slate-500 uppercase block">Designation / Role</span>
+                    <span className="text-[10px] font-mono text-slate-500 uppercase block">Cadre / Designation</span>
                     <p className="font-bold text-slate-800 dark:text-slate-200">{currentUser.position || 'Practicing Member'}</p>
                   </div>
                   <div>
@@ -458,31 +533,83 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
                     <p className="font-bold text-slate-800 dark:text-slate-200">{currentUser.state} State {currentUser.lga ? `(${currentUser.lga} LGA)` : ''}</p>
                   </div>
                   <div>
-                    <span className="text-[10px] font-mono text-slate-500 uppercase block">Status</span>
-                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
-                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                      OFFICIALLY APPROVED
-                    </span>
+                    <span className="text-[10px] font-mono text-slate-500 uppercase block">Engineering Specialization</span>
+                    <p className="font-bold text-slate-800 dark:text-slate-200">{currentUser.specialization || 'Electrical Engineering'}</p>
                   </div>
                   <div>
                     <span className="text-[10px] font-mono text-slate-500 uppercase block">Verification Reference</span>
-                    <p className="font-mono text-xs text-slate-700 dark:text-slate-300">{currentUser.verificationCode || currentUser.applicationReference || currentUser.id}</p>
+                    <p className="font-mono text-xs text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded inline-block">
+                      {currentUser.verificationCode || currentUser.applicationReference || currentUser.id}
+                    </p>
                   </div>
                 </div>
               </div>
 
-              {/* Endorsement & Secretary Signature preview block */}
-              <div className="pt-4 border-t border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-4">
+              {/* Authentic Secretary General Endorsement & Signature block */}
+              <div className="relative pt-6 border-t-2 border-slate-200 dark:border-slate-700 flex flex-col sm:flex-row items-center justify-between gap-6 bg-slate-50 dark:bg-slate-800/50 p-5 rounded-2xl border">
                 <div className="flex items-center gap-3">
-                  <ShieldCheck className="w-8 h-8 text-emerald-500 flex-shrink-0" />
-                  <div className="text-xs">
-                    <p className="font-bold text-slate-900 dark:text-white">Authentic Secretary General Endorsement</p>
-                    <p className="text-slate-500 text-[11px]">Approved electronically by National Secretariat Kano Headquarters</p>
+                  <ShieldCheck className="w-9 h-9 text-emerald-500 flex-shrink-0" />
+                  <div>
+                    <p className="font-bold text-xs sm:text-sm text-slate-900 dark:text-white">Authentic Secretary General Digital Endorsement</p>
+                    <p className="text-slate-500 dark:text-slate-400 text-[10px] sm:text-[11px]">Officially sealed &amp; issued under the authority of National Secretariat Kano Headquarters</p>
                   </div>
                 </div>
-                <div className="text-center sm:text-right">
+                
+                {/* Digital Signature with Graphic */}
+                <div className="text-center sm:text-right flex flex-col items-center sm:items-end flex-shrink-0">
+                  <img 
+                    src={OFFICIAL_SECRETARY_SIGNATURE} 
+                    alt="Secretary General Signature" 
+                    className="h-12 sm:h-14 object-contain mb-1"
+                    onError={(e) => {
+                      const target = e.currentTarget;
+                      if (target.src !== '/secretary-signature.png') target.src = '/secretary-signature.png';
+                    }}
+                  />
+                  <div className="w-44 border-b border-[#0A2E73] dark:border-sky-400 my-1" />
                   <p className="font-serif font-bold text-xs text-slate-900 dark:text-white">Engr. Hussaini Ali</p>
                   <p className="text-[10px] font-bold text-[#0A2E73] dark:text-sky-400 uppercase tracking-wide">Secretary General, N-NEPEF 2020</p>
+                  <p className="text-[8px] text-slate-500 dark:text-slate-400 font-mono">National Secretariat, Kano State Headquarters</p>
+                </div>
+              </div>
+
+              {/* Bottom Choice Action Toolbar */}
+              <div className="relative pt-3 border-t border-slate-200 dark:border-slate-700 flex flex-col sm:flex-row items-center justify-between gap-4">
+                <span className="text-[11px] text-slate-500 dark:text-slate-400 font-mono">
+                  Official Certified Membership Document
+                </span>
+                <div className="flex items-center gap-3 w-full sm:w-auto">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setIsDownloadingSlipPdf(true);
+                      try {
+                        await downloadApprovalSlipPdf(currentUser, settings);
+                      } catch (e) {
+                        console.warn(e);
+                        setShowSlipModal(true);
+                      } finally {
+                        setIsDownloadingSlipPdf(false);
+                      }
+                    }}
+                    disabled={isDownloadingSlipPdf}
+                    className="flex-1 sm:flex-initial px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-75 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-md transition-all cursor-pointer active:scale-95"
+                  >
+                    {isDownloadingSlipPdf ? (
+                      <Loader2 className="w-4 h-4 animate-spin text-emerald-200" />
+                    ) : (
+                      <Download className="w-4 h-4 text-emerald-200" />
+                    )}
+                    <span>{isDownloadingSlipPdf ? 'Downloading PDF...' : 'Download PDF Slip'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowSlipModal(true)}
+                    className="flex-1 sm:flex-initial px-5 py-2.5 rounded-xl bg-[#0A2E73] hover:bg-sky-900 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-md transition-all cursor-pointer active:scale-95"
+                  >
+                    <Printer className="w-4 h-4 text-[#2EA3F2]" />
+                    <span>Print Official Slip</span>
+                  </button>
                 </div>
               </div>
             </div>

@@ -61,7 +61,7 @@ function isValidSupabaseKey(keyToTest: string): boolean {
  * for public client credentials.
  */
 function resolveSupabaseUrl(): string {
-  const envUrl = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env.VITE_SUPABASE_URL : '';
+  const envUrl = getEnv('VITE_SUPABASE_URL') || getEnv('SUPABASE_URL');
   if (envUrl && typeof envUrl === 'string' && isValidHttpUrl(envUrl.trim())) {
     return normalizeSupabaseUrl(envUrl);
   }
@@ -72,7 +72,7 @@ function resolveSupabaseUrl(): string {
  * Resolve Supabase Public / Publishable Anon key across Vite client bundle.
  */
 function resolveSupabaseKey(): string {
-  const envKey = (typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY : '') || '';
+  const envKey = getEnv('VITE_SUPABASE_PUBLISHABLE_KEY') || getEnv('SUPABASE_KEY') || getEnv('SUPABASE_ANON_KEY');
   if (envKey && typeof envKey === 'string' && isValidSupabaseKey(envKey.trim())) {
     return envKey.trim();
   }

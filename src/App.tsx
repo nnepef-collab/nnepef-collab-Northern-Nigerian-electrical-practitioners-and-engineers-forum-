@@ -229,9 +229,13 @@ export default function App() {
       if (isAdminLoggedIn) {
         localStorage.setItem('nnepef_admin_logged_in', 'true');
         sessionStorage.setItem('nnepef_admin_logged_in', 'true');
+        if (!localStorage.getItem('nnepef_current_admin')) {
+          localStorage.setItem('nnepef_current_admin', JSON.stringify({ email: 'ahmadhussainiali2020@gmail.com', role: 'super_admin' }));
+        }
       } else {
         localStorage.removeItem('nnepef_admin_logged_in');
         sessionStorage.removeItem('nnepef_admin_logged_in');
+        localStorage.removeItem('nnepef_current_admin');
       }
     } catch (e) {}
   }, [isAdminLoggedIn]);

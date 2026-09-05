@@ -225,7 +225,7 @@ export async function initializeLocalDatabase(): Promise<void> {
     safeSetStorage(STORAGE_KEYS.SETTINGS, initialForumSettings);
   }
   if (localStorage.getItem(STORAGE_KEYS.PAYMENTS) === null) {
-    safeSetStorage(STORAGE_KEYS.PAYMENTS, initialPayments);
+    safeSetStorage(STORAGE_KEYS.PAYMENTS, []);
   }
   if (localStorage.getItem(STORAGE_KEYS.ANNOUNCEMENTS) === null) {
     safeSetStorage(STORAGE_KEYS.ANNOUNCEMENTS, initialAnnouncements);

@@ -133,6 +133,14 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                         password === foundAdmin.password || 
                         (password && password.length >= 4 && (cleanInput === 'ahmadhussainiali2020@gmail.com' || cleanInput === 'ahmadhussainiali2020'));
         if (isMatch) {
+          try {
+            localStorage.setItem('nnepef_current_admin', JSON.stringify({
+              id: foundAdmin.id,
+              email: foundAdmin.email,
+              role: foundAdmin.role || 'super_admin',
+              fullName: foundAdmin.fullName
+            }));
+          } catch (e) {}
           onLoginAdminSuccess();
           setCurrentView('admin-dashboard');
           setIsSubmitting(false);
@@ -147,6 +155,13 @@ export const LoginModal: React.FC<LoginModalProps> = ({
       // Default authorized credentials for Super Admin Hussaini Ahmad Ali
       if (cleanInput === 'ahmadhussainiali2020@gmail.com' || cleanInput === 'ahmadhussainiali2020') {
         if (password && password.length >= 4) {
+          try {
+            localStorage.setItem('nnepef_current_admin', JSON.stringify({
+              email: 'ahmadhussainiali2020@gmail.com',
+              role: 'super_admin',
+              fullName: 'Hussaini Ahmad Ali'
+            }));
+          } catch (e) {}
           onLoginAdminSuccess();
           setCurrentView('admin-dashboard');
           setIsSubmitting(false);

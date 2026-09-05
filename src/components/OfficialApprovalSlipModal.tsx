@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Member, ForumSettings } from '../types';
-import { Printer, Download, X, CheckCircle2, ShieldCheck, QrCode, Building2, Calendar, Award } from 'lucide-react';
+import { Printer, Download, X, CheckCircle2, ShieldCheck, QrCode, Building2, Calendar, Award, Loader2 } from 'lucide-react';
 import { OFFICIAL_NNEPEF_LOGO } from '../constants/logo';
 import { OFFICIAL_SECRETARY_SIGNATURE, OFFICIAL_SECRETARY_SIGNATURE_URL } from '../constants/signature';
 import { downloadApprovalSlipPdf } from '../services/pdfService';
@@ -18,16 +18,21 @@ export const OfficialApprovalSlipModal: React.FC<OfficialApprovalSlipModalProps>
 }) => {
   if (!member) return null;
 
+  const [isDownloading, setIsDownloading] = useState(false);
+
   const handlePrint = () => {
     window.print();
   };
 
   const handleDownloadPdf = async () => {
+    setIsDownloading(true);
     try {
       await downloadApprovalSlipPdf(member, settings);
     } catch (e) {
       console.warn('Direct PDF download fallback to print:', e);
       window.print();
+    } finally {
+      setIsDownloading(false);
     }
   };
 
@@ -45,29 +50,38 @@ export const OfficialApprovalSlipModal: React.FC<OfficialApprovalSlipModalProps>
       <div className="bg-white text-slate-900 max-w-3xl w-full rounded-3xl border-2 border-slate-200 shadow-2xl overflow-hidden my-6 print:shadow-none print:border-none print:m-0 print:w-full print:max-w-none print:rounded-none">
         
         {/* Header Action Bar - Hidden in Print */}
-        <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between print:hidden">
+        <div className="px-6 py-4 bg-slate-900 text-white flex flex-col sm:flex-row items-center justify-between gap-3 print:hidden">
           <div className="flex items-center gap-2">
             <ShieldCheck className="w-5 h-5 text-emerald-400" />
             <span className="font-bold text-sm">Official N-NEPEF 2020 Membership Approval Slip</span>
           </div>
           <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-400 font-mono hidden sm:inline mr-1">Choose Action:</span>
             <button
               onClick={handleDownloadPdf}
-              className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow"
+              disabled={isDownloading}
+              className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-75 text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow cursor-pointer active:scale-95"
+              title="Download Official Slip as PDF file"
             >
-              <Download className="w-4 h-4" />
-              <span>Download PDF</span>
+              {isDownloading ? (
+                <Loader2 className="w-4 h-4 animate-spin text-emerald-200" />
+              ) : (
+                <Download className="w-4 h-4 text-emerald-200" />
+              )}
+              <span>{isDownloading ? 'Downloading PDF...' : 'Download PDF'}</span>
             </button>
             <button
               onClick={handlePrint}
-              className="px-3.5 py-1.5 rounded-xl bg-[#2EA3F2] hover:bg-sky-600 text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow"
+              className="px-4 py-2 rounded-xl bg-[#0A2E73] hover:bg-sky-800 text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow cursor-pointer active:scale-95"
+              title="Print Official Slip directly or Save to PDF"
             >
-              <Printer className="w-4 h-4" />
+              <Printer className="w-4 h-4 text-[#2EA3F2]" />
               <span>Print Slip</span>
             </button>
             <button
               onClick={onClose}
-              className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-all ml-1"
+              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-all ml-1 cursor-pointer"
+              title="Close modal"
             >
               <X className="w-4 h-4" />
             </button>
@@ -274,22 +288,35 @@ export const OfficialApprovalSlipModal: React.FC<OfficialApprovalSlipModalProps>
         </div>
 
         {/* Footer Actions - Hidden in Print */}
-        <div className="px-6 py-4 bg-slate-100 border-t border-slate-200 flex items-center justify-between print:hidden">
-          <span className="text-xs text-slate-500 font-mono">
-            N-NEPEF 2020 • Central Verified Record
+        <div className="px-6 py-4 bg-slate-100 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 print:hidden">
+          <span className="text-xs text-slate-500 font-mono flex items-center gap-1.5">
+            <ShieldCheck className="w-4 h-4 text-emerald-600" />
+            <span>N-NEPEF 2020 • Central Certified Membership Record</span>
           </span>
           <div className="flex items-center gap-3">
             <button
               onClick={onClose}
-              className="px-4 py-2 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-bold transition-all"
+              className="px-4 py-2.5 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-bold transition-all cursor-pointer"
             >
               Close
             </button>
             <button
-              onClick={handlePrint}
-              className="px-5 py-2 rounded-xl bg-[#0A2E73] hover:bg-sky-900 text-white text-xs font-bold transition-all flex items-center gap-2 shadow"
+              onClick={handleDownloadPdf}
+              disabled={isDownloading}
+              className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-75 text-white text-xs font-bold transition-all flex items-center gap-2 shadow cursor-pointer active:scale-95"
             >
-              <Printer className="w-4 h-4" />
+              {isDownloading ? (
+                <Loader2 className="w-4 h-4 animate-spin text-emerald-200" />
+              ) : (
+                <Download className="w-4 h-4 text-emerald-200" />
+              )}
+              <span>{isDownloading ? 'Downloading PDF...' : 'Download PDF'}</span>
+            </button>
+            <button
+              onClick={handlePrint}
+              className="px-5 py-2.5 rounded-xl bg-[#0A2E73] hover:bg-sky-900 text-white text-xs font-bold transition-all flex items-center gap-2 shadow cursor-pointer active:scale-95"
+            >
+              <Printer className="w-4 h-4 text-[#2EA3F2]" />
               <span>Print Official Slip</span>
             </button>
           </div>
