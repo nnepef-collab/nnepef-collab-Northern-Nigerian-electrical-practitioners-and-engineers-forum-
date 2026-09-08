@@ -122,6 +122,7 @@ import { DocumentsView } from './components/DocumentsView';
 import { LeadershipView } from './components/LeadershipView';
 import { LoginModal } from './components/LoginModal';
 import { Wrench, Lock } from 'lucide-react';
+import { safeMergeMember } from './utils/memberHelpers';
 
 export default function App() {
   // Theme State
@@ -252,38 +253,23 @@ export default function App() {
     } catch (e) {}
   }, [currentUser]);
 
-  // Sync currentUser with updated members database record without erasing valid receipts
+  // Sync currentUser with updated members database record using non-destructive safe merge
   useEffect(() => {
     if (!currentUser?.id || members.length === 0) return;
     const cleanEmail = (currentUser.email || '').trim().toLowerCase();
     const cleanId = (currentUser.membershipId || '').trim().toLowerCase();
+    const cleanPhone = (currentUser.phone || '').trim();
     const latest = members.find(m => 
       m.id === currentUser.id || 
-      (m.email && m.email.trim().toLowerCase() === cleanEmail) || 
-      (m.membershipId && m.membershipId.trim().toLowerCase() === cleanId)
+      (cleanId && m.membershipId && m.membershipId.trim().toLowerCase() === cleanId) ||
+      (cleanEmail && m.email && m.email.trim().toLowerCase() === cleanEmail) ||
+      (cleanPhone && m.phone && m.phone.trim() === cleanPhone)
     );
     if (!latest) return;
 
     setCurrentUser(prev => {
       if (!prev) return null;
-      const effectiveReceipt = latest.paymentReceiptUrl || prev.paymentReceiptUrl || '';
-      const effectivePassport = latest.passportUrl || prev.passportUrl || '';
-
-      const hasDiff = 
-        latest.status !== prev.status ||
-        effectiveReceipt !== prev.paymentReceiptUrl ||
-        effectivePassport !== prev.passportUrl ||
-        latest.membershipId !== prev.membershipId ||
-        latest.fullName !== prev.fullName;
-
-      if (!hasDiff) return prev;
-
-      return {
-        ...prev,
-        ...latest,
-        paymentReceiptUrl: effectiveReceipt,
-        passportUrl: effectivePassport,
-      };
+      return safeMergeMember(prev, latest);
     });
   }, [members, currentUser?.id]);
 
@@ -319,7 +305,7 @@ export default function App() {
             setIsAdminLoggedIn(true);
           }
           if (sessionResult.user) {
-            setCurrentUser(sessionResult.user);
+            setCurrentUser(prev => prev ? safeMergeMember(prev, sessionResult.user) : sessionResult.user);
           }
         }
 
@@ -395,7 +381,7 @@ export default function App() {
             setIsAdminLoggedIn(true);
           }
           if (freshSession.user) {
-            setCurrentUser(freshSession.user);
+            setCurrentUser(prev => prev ? safeMergeMember(prev, freshSession.user) : freshSession.user);
           }
         }
       }
@@ -771,6 +757,7 @@ export default function App() {
           {currentView === 'register' && (
             <MemberRegistration
               settings={settings}
+              members={members}
               onRegister={handleRegisterMember}
               setCurrentView={setCurrentView}
             />
@@ -841,7 +828,7 @@ export default function App() {
                 admins={admins}
                 logoUrl={settings?.logoUrl}
                 onLoginMemberSuccess={(member) => {
-                  setCurrentUser(member);
+                  setCurrentUser(prev => prev ? safeMergeMember(prev, member) : member);
                   setCurrentView('portal');
                 }}
                 onLoginAdminSuccess={() => {
@@ -860,7 +847,7 @@ export default function App() {
               admins={admins}
               logoUrl={settings?.logoUrl}
               onLoginMemberSuccess={(member) => {
-                setCurrentUser(member);
+                setCurrentUser(prev => prev ? safeMergeMember(prev, member) : member);
                 setCurrentView('portal');
               }}
               onLoginAdminSuccess={() => {
@@ -878,7 +865,7 @@ export default function App() {
               admins={admins}
               logoUrl={settings?.logoUrl}
               onLoginMemberSuccess={(member) => {
-                setCurrentUser(member);
+                setCurrentUser(prev => prev ? safeMergeMember(prev, member) : member);
                 setCurrentView('portal');
               }}
               onLoginAdminSuccess={() => {
@@ -940,7 +927,7 @@ export default function App() {
                 members={members}
                 admins={admins}
                 logoUrl={settings?.logoUrl}
-                onLoginMemberSuccess={(m) => setCurrentUser(m)}
+                onLoginMemberSuccess={(m) => setCurrentUser(prev => prev ? safeMergeMember(prev, m) : m)}
                 onLoginAdminSuccess={() => {
                   setIsAdminLoggedIn(true);
                   setCurrentView('admin-dashboard');

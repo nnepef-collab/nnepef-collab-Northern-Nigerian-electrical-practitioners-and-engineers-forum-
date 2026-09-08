@@ -355,62 +355,11 @@ async function setupSchemaAndSeed(database: Database): Promise<void> {
 }
 
 /**
- * Initialize SQLite Database Engine
+ * Initialize SQLite Database Engine - DISABLED
+ * Supabase PostgreSQL is the sole production database.
  */
 export async function initSQLiteDatabase(): Promise<Database> {
-  if (db && isInitialized) return db;
-
-  console.log('⚡ [SQLite Engine] Initializing local SQLite database...');
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-
-  const SQL = await initSqlJs();
-
-  let loadedExisting = false;
-  if (fs.existsSync(SQLITE_FILE_PATH)) {
-    try {
-      const fileBuffer = fs.readFileSync(SQLITE_FILE_PATH);
-      if (fileBuffer.length > 0) {
-        db = new SQL.Database(fileBuffer);
-        // Verify database is readable
-        db.run('SELECT 1;');
-        loadedExisting = true;
-        console.log(`✅ [SQLite Engine] Loaded existing SQLite database from ${SQLITE_FILE_PATH} (${(fileBuffer.length / 1024).toFixed(1)} KB)`);
-      }
-    } catch (e) {
-      console.error('[SQLite Engine] Malformed/Corrupt SQLite file on disk. Resetting to clean database instance:', e);
-      try {
-        if (fs.existsSync(SQLITE_FILE_PATH)) {
-          fs.unlinkSync(SQLITE_FILE_PATH);
-        }
-      } catch (delErr) {}
-      db = null;
-    }
-  }
-
-  if (!db) {
-    db = new SQL.Database();
-    console.log('📦 [SQLite Engine] Created fresh SQLite database instance in memory');
-  }
-
-  try {
-    await setupSchemaAndSeed(db);
-  } catch (schemaErr) {
-    console.error('[SQLite Engine] Error setting up schema on loaded database, recreating fresh database:', schemaErr);
-    try {
-      if (fs.existsSync(SQLITE_FILE_PATH)) {
-        fs.unlinkSync(SQLITE_FILE_PATH);
-      }
-    } catch (e) {}
-    db = new SQL.Database();
-    await setupSchemaAndSeed(db);
-  }
-
-  persistDatabaseToDisk();
-  isInitialized = true;
-  console.log('✅ [SQLite Engine] Tables verified & SQLite local database ready.');
-  return db;
+  throw new Error('SQLite database engine is disabled. Supabase PostgreSQL is the sole database.');
 }
 
 /**

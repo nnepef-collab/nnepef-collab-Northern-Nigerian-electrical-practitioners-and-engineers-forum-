@@ -76,6 +76,8 @@ import {
   saveLocalCMSFiles
 } from './localDatabaseService';
 import { generateUUID } from '../utils/uuid';
+import { parseNextOfKin, parseEducationDetails, safeMergeMember } from '../utils/memberHelpers';
+export { parseNextOfKin, parseEducationDetails, safeMergeMember };
 
 /**
  * Resolves API path for both browser and server/test environments
@@ -406,6 +408,9 @@ export function normalizeMemberStatus(status: any): 'pending' | 'approved' | 're
 }
 
 export function mapSupabaseRowToMember(row: any): Member {
+  const qualDetails = parseEducationDetails(row);
+  const nextOfKinObj = parseNextOfKin(row.next_of_kin || row.nextOfKin, row.next_of_kin_phone);
+
   return {
     id: row.id,
     membershipId: row.membership_id || row.membershipId || '',
@@ -429,10 +434,16 @@ export function mapSupabaseRowToMember(row: any): Member {
     residentialAddress: row.residential_address || row.residentialAddress || row.address || '',
     occupation: row.occupation || 'Practitioner',
     specialization: row.specialization || '',
-    qualification: row.qualification || '',
+    highestQualification: qualDetails.highestQualification || row.highestQualification || row.highest_qualification || row.qualification || '',
+    qualification: row.qualification || qualDetails.highestQualification || row.highestQualification || '',
+    courseOfStudy: qualDetails.courseOfStudy || row.course_of_study || row.courseOfStudy || '',
+    institution: qualDetails.institution || row.institution || row.company_name || row.company || '',
+    graduationYear: qualDetails.graduationYear || row.graduation_year || row.graduationYear || '',
+    otherQualifications: qualDetails.otherQualifications || row.other_qualifications || row.otherQualifications || '',
+    professionalCertificates: qualDetails.professionalCertificates || row.professional_certificates || row.professionalCertificates || '',
     membershipType: row.membership_type || row.membershipType || 'Full Member',
     yearsOfExperience: Number(row.years_of_experience || row.yearsOfExperience || 0),
-    company: row.company || '',
+    company: qualDetails.institution || row.company || row.company_name || '',
     passportUrl: row.passport_url || row.passportUrl || row.passport_photo_url || row.passportPhotoUrl || row.photo_url || '',
     passportPhotoUrl: row.passport_photo_url || row.passportPhotoUrl || row.passport_url || row.passportUrl || row.photo_url || '',
     photoUrl: row.photo_url || row.passport_url || row.passportUrl || '',
@@ -450,7 +461,7 @@ export function mapSupabaseRowToMember(row: any): Member {
     notes: row.notes || row.adminNotes || undefined,
     approvalNotificationSent: Boolean(row.approval_notification_sent || row.approvalNotificationSent),
     approvalNotificationSentAt: row.approval_notification_sent_at || row.approvalNotificationSentAt || undefined,
-    nextOfKin: row.next_of_kin || row.nextOfKin || undefined
+    nextOfKin: nextOfKinObj
   };
 }
 
@@ -778,7 +789,13 @@ export async function saveMemberToSupabase(member: Member): Promise<Member> {
   const appRef = member.applicationReference || `APP-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
   const verCode = member.verificationCode || `VER-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
 
-  // Construct clean database payload strictly matching public.members 30 table columns
+  // Package education details cleanly using standard parser so school info is NEVER lost
+  const educationDetails = parseEducationDetails(member);
+
+  // Package next of kin cleanly using standard parser so next of kin info is NEVER lost
+  const nextOfKinObj = parseNextOfKin(member.nextOfKin, member.phone);
+
+  // Construct clean database payload strictly matching public.members table columns
   const dbPayload: Record<string, any> = {
     id: memberId,
     full_name: (member.fullName || '').trim(),
@@ -792,14 +809,17 @@ export async function saveMemberToSupabase(member: Member): Promise<Member> {
     residential_address: member.residentialAddress || member.address || null,
     occupation: member.occupation ? String(member.occupation).trim() : 'Practitioner',
     specialization: member.specialization || null,
-    qualification: member.qualification || member.highestQualification || null,
+    qualification: educationDetails.highestQualification || member.highestQualification || member.qualification || null,
+    qualification_details: JSON.stringify(educationDetails),
+    company_name: educationDetails.institution || member.company || null,
     years_of_experience: Number(member.yearsOfExperience) || 0,
     membership_type: member.membershipType || 'Full Member',
     passport_url: member.passportPhotoUrl || member.passportUrl || null,
     payment_receipt_url: member.paymentReceiptUrl || null,
     status: (member.status || 'pending').toLowerCase(),
     position: member.position || 'Member',
-    next_of_kin: member.nextOfKin || {},
+    next_of_kin: JSON.stringify(nextOfKinObj),
+    next_of_kin_phone: nextOfKinObj.phone ? String(nextOfKinObj.phone).trim() : null,
     verification_code: verCode,
     application_reference: appRef,
     registered_at: member.registeredAt || new Date().toISOString(),
@@ -816,231 +836,165 @@ export async function saveMemberToSupabase(member: Member): Promise<Member> {
     id: memberId,
     membershipId: finalMembershipId || '',
     verificationCode: verCode,
-    applicationReference: appRef
+    applicationReference: appRef,
+    institution: educationDetails.institution,
+    courseOfStudy: educationDetails.courseOfStudy,
+    graduationYear: educationDetails.graduationYear,
+    highestQualification: educationDetails.highestQualification,
+    otherQualifications: educationDetails.otherQualifications,
+    professionalCertificates: educationDetails.professionalCertificates,
+    nextOfKin: nextOfKinObj
   };
 
-  let clientSaved = false;
-  let clientErrorMsg = '';
+  let savedMemberRecord: Member | null = null;
+  let saveErrorMessage = '';
 
-  // 1. Direct client-side save via Supabase client (SECURITY DEFINER RPC or direct table)
-  if (isSupabaseConfigured()) {
-    try {
-      let rpcSuccess = false;
-
-      // Case A: Approval Action -> Invoke approve_member or admin_approve_member RPC
-      if (dbPayload.status === 'approved') {
-        try {
-          const { data: approveData, error: approveError } = await supabase.rpc('approve_member', {
-            p_member_id: memberId,
-            p_membership_id: finalMembershipId || null
-          });
-
-          if (!approveError) {
-            clientSaved = true;
-            rpcSuccess = true;
-          }
-        } catch (apprErr) {}
-
-        if (!rpcSuccess) {
-          try {
-            const { data: admAppData, error: admAppErr } = await supabase.rpc('admin_approve_member', {
-              p_member_id: memberId,
-              p_membership_id: finalMembershipId || null,
-              p_approved_by: dbPayload.approved_by || 'Super Admin Secretariat',
-              p_position: dbPayload.position || 'Member',
-              p_issue_date: member.issueDate || null,
-              p_expiry_date: member.expiryDate || null
-            });
-            if (!admAppErr && admAppData) {
-              clientSaved = true;
-              rpcSuccess = true;
-            }
-          } catch (admErr) {}
-        }
-      }
-
-      // Case B: Rejection Action -> Invoke reject_member RPC
-      if (dbPayload.status === 'rejected') {
-        try {
-          const { data: rejData, error: rejError } = await supabase.rpc('reject_member', {
-            p_member_id: memberId,
-            p_reason: member.rejectionReason || 'Application rejected'
-          });
-          if (!rejError) {
-            clientSaved = true;
-            rpcSuccess = true;
-          }
-        } catch (rejErr) {}
-      }
-
-      // Case C: Registration Action -> Invoke authoritative SECURITY DEFINER public_register_member RPC
-      if (!rpcSuccess && (dbPayload.status === 'pending' || !finalMembershipId)) {
-        try {
-          const { data: regData, error: regError } = await supabase.rpc('public_register_member', {
-            p_email: dbPayload.email,
-            p_full_name: dbPayload.full_name,
-            p_lga: dbPayload.lga,
-            p_nin: dbPayload.nin,
-            p_occupation: dbPayload.occupation,
-            p_phone: dbPayload.phone,
-            p_position: dbPayload.position,
-            p_qualification: dbPayload.qualification || '',
-            p_state: dbPayload.state
-          });
-
-          if (!regError && regData && (regData.success || regData.member_id)) {
-            clientSaved = true;
-            rpcSuccess = true;
-            if (regData.member_id) {
-              cleanMember.id = regData.member_id;
-              dbPayload.id = regData.member_id;
-            }
-            if (regData.verification_code) {
-              cleanMember.verificationCode = regData.verification_code;
-              dbPayload.verification_code = regData.verification_code;
-            }
-            if (regData.application_reference) {
-              cleanMember.applicationReference = regData.application_reference;
-              dbPayload.application_reference = regData.application_reference;
-            }
-
-            // Immediately update the newly created record with full profile fields
-            try {
-              await supabase.from('members').update({
-                gender: dbPayload.gender,
-                date_of_birth: dbPayload.date_of_birth,
-                residential_address: dbPayload.residential_address,
-                specialization: dbPayload.specialization,
-                years_of_experience: dbPayload.years_of_experience,
-                membership_type: dbPayload.membership_type,
-                passport_url: dbPayload.passport_url,
-                payment_receipt_url: dbPayload.payment_receipt_url,
-                next_of_kin: dbPayload.next_of_kin
-              }).eq('id', dbPayload.id);
-            } catch (patchErr) {}
-          } else if (regError) {
-            clientErrorMsg = regError.message;
-          }
-        } catch (regErr: any) {
-          clientErrorMsg = regErr?.message || String(regErr);
-        }
-      }
-
-      // Case D: Fallback to Direct Supabase Table Write using sanitized dbPayload
-      if (!rpcSuccess) {
-        const { error: upsertError } = await supabase
-          .from('members')
-          .upsert(dbPayload, { onConflict: 'id' });
-
-        if (!upsertError) {
-          clientSaved = true;
-        } else {
-          const { error: insertError } = await supabase
-            .from('members')
-            .insert(dbPayload);
-
-          if (!insertError) {
-            clientSaved = true;
-          } else if (insertError.code === '23505' || insertError.message?.includes('duplicate key')) {
-            const { error: updateError } = await supabase
-              .from('members')
-              .update(dbPayload)
-              .eq('id', memberId);
-
-            if (!updateError) {
-              clientSaved = true;
-            } else {
-              clientErrorMsg = updateError.message;
-            }
-          } else {
-            clientErrorMsg = insertError.message;
-          }
-        }
-      }
-    } catch (directErr: any) {
-      clientErrorMsg = directErr.message || String(directErr);
-    }
-  }
-
-  // 2. Server-side API endpoint (/api/members) fallback or sync
-  let serverSaved = false;
-  let serverErrorMsg = '';
-
-  if (!clientSaved) {
-    // Only attempt server proxy if direct client hasn't succeeded
-    try {
-      const apiRes = await fetch(getApiEndpoint('/api/members'), {
-        method: 'POST',
-        headers: getApiHeaders(),
-        body: JSON.stringify(cleanMember)
-      });
-      if (apiRes.ok) {
-        serverSaved = true;
-      } else {
-        const errData = await apiRes.json().catch(() => null);
-        if (errData && errData.error) {
-          serverErrorMsg = errData.error;
-        }
-      }
-    } catch (apiErr: any) {
-      // Server proxy not available in this environment
-      serverErrorMsg = apiErr?.message || '';
-    }
-  } else {
-    // If client already saved to Supabase, asynchronously notify server endpoint without blocking
-    try {
-      fetch(getApiEndpoint('/api/members'), {
-        method: 'POST',
-        headers: getApiHeaders(),
-        body: JSON.stringify(cleanMember)
-      }).catch(() => {});
-    } catch (e) {}
-  }
-
-  // If neither direct client nor server succeeded, throw helpful, clear error
-  if (!clientSaved && !serverSaved) {
-    if (!isSupabaseConfigured()) {
-      throw new Error('Supabase database is not configured. Please ensure VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY are provided in your environment variables.');
-    }
-    
-    const combined = clientErrorMsg || serverErrorMsg || 'Unable to connect to Supabase database';
-    if (combined.includes('Failed to fetch') || combined.includes('TypeError: Failed to fetch') || combined.includes('NetworkError')) {
-      throw new Error('Network error: Unable to reach the Supabase database. Please check your internet connection or verify that the Supabase project is active.');
-    }
-    if (combined.toLowerCase().includes('schema cache') || combined.toLowerCase().includes('could not find the table') || combined.toLowerCase().includes('does not exist')) {
-      throw new Error(`Supabase Database Error: Table 'public.members' not found. Please execute the database schema in your Supabase SQL Editor.`);
-    }
-    throw new Error(`Supabase Database Error: ${combined}`);
-  }
-
-  // 3. Confirm persistence: read the saved record back from Supabase before returning
+  // 1. Primary write: Server-side API endpoint (/api/members)
+  // This executes an atomic PostgreSQL upsert using the authoritative SUPABASE_SERVICE_ROLE_KEY
   try {
-    const verified = await fetchMemberByIdFromSupabase(dbPayload.id || memberId);
-    if (verified) {
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('nnepef_db_changed', { detail: { table: 'members' } }));
+    const apiRes = await fetch(getApiEndpoint('/api/members'), {
+      method: 'POST',
+      headers: getApiHeaders(),
+      body: JSON.stringify(cleanMember)
+    });
+    if (apiRes.ok) {
+      const json = await apiRes.json().catch(() => null);
+      if (json && json.success && json.member) {
+        savedMemberRecord = safeMergeMember(cleanMember, mapSupabaseRowToMember(json.member));
       }
-      return verified;
+    } else {
+      const errData = await apiRes.json().catch(() => null);
+      if (errData && errData.error) {
+        saveErrorMessage = errData.error;
+      }
     }
-  } catch (readBackErr) {
-    console.warn('[Supabase] Non-blocking readback verification notice:', readBackErr);
+  } catch (apiErr: any) {
+    saveErrorMessage = apiErr?.message || '';
+  }
+
+  // 2. Fallback: Direct Supabase PostgreSQL table upsert via client SDK
+  if (!savedMemberRecord && isSupabaseConfigured()) {
+    try {
+      // Direct duplicate check prior to upsert if ID is generated
+      const cleanPhone = cleanMember.phone ? String(cleanMember.phone).trim() : null;
+      const cleanNin = cleanMember.nin ? String(cleanMember.nin).trim() : null;
+      if (cleanPhone || cleanNin) {
+        let query = supabase.from('members').select('*');
+        if (cleanPhone && cleanNin) {
+          query = query.or(`phone.eq.${cleanPhone},nin.eq.${cleanNin}`);
+        } else if (cleanPhone) {
+          query = query.eq('phone', cleanPhone);
+        } else if (cleanNin) {
+          query = query.eq('nin', cleanNin);
+        }
+        const { data: existingRows } = await query.limit(1);
+        if (existingRows && existingRows.length > 0) {
+          dbPayload.id = existingRows[0].id;
+          cleanMember.id = existingRows[0].id;
+        }
+      }
+
+      const { data, error } = await supabase
+        .from('members')
+        .upsert(dbPayload, { onConflict: 'id' })
+        .select()
+        .maybeSingle();
+
+      if (!error && data) {
+        savedMemberRecord = safeMergeMember(cleanMember, mapSupabaseRowToMember(data));
+      } else if (error) {
+        saveErrorMessage = error.message;
+      }
+    } catch (clientErr: any) {
+      saveErrorMessage = clientErr?.message || String(clientErr);
+    }
+  }
+
+  // If neither method succeeded, throw informative error
+  if (!savedMemberRecord) {
+    if (!isSupabaseConfigured()) {
+      throw new Error('Supabase database is not configured. Please ensure VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY are set.');
+    }
+    throw new Error(`Failed to save member to Supabase database: ${saveErrorMessage || 'Network or database error'}`);
   }
 
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('nnepef_db_changed', { detail: { table: 'members' } }));
   }
 
-  return cleanMember;
+  return savedMemberRecord;
 }
 
 export const saveMemberToSQLite = saveMemberToSupabase;
 
 export async function updateMemberFieldsInSupabase(memberId: string, partialFields: Partial<Member>): Promise<Member | null> {
-  const existing = await fetchApprovedMemberById(memberId);
-  if (!existing) return null;
+  if (!memberId) return null;
 
-  const merged: Member = { ...existing, ...partialFields };
-  return saveMemberToSupabase(merged);
+  // 1. Surgical update via Server API PUT /api/members/:id (which uses SUPABASE_SERVICE_ROLE_KEY)
+  try {
+    const res = await fetch(getApiEndpoint(`/api/members/${encodeURIComponent(memberId)}`), {
+      method: 'PUT',
+      headers: getApiHeaders(),
+      body: JSON.stringify(partialFields)
+    });
+    if (res.ok) {
+      const json = await res.json().catch(() => null);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('nnepef_db_changed', { detail: { table: 'members' } }));
+      }
+      if (json && json.member) {
+        return mapSupabaseRowToMember(json.member);
+      }
+    }
+  } catch (apiErr) {
+    console.warn('[updateMemberFieldsInSupabase] Server API notice:', apiErr);
+  }
+
+  // 2. Direct client fallback via Supabase client
+  if (isSupabaseConfigured()) {
+    try {
+      const dbPartial: Record<string, any> = {
+        updated_at: new Date().toISOString()
+      };
+      if (partialFields.status !== undefined) dbPartial.status = String(partialFields.status).toLowerCase();
+      if (partialFields.membershipId !== undefined) dbPartial.membership_id = partialFields.membershipId;
+      if (partialFields.passportUrl !== undefined) {
+        dbPartial.passport_url = partialFields.passportUrl;
+      }
+      if (partialFields.passportPhotoUrl !== undefined) {
+        dbPartial.passport_url = partialFields.passportPhotoUrl;
+      }
+      if (partialFields.paymentReceiptUrl !== undefined) {
+        dbPartial.payment_receipt_url = partialFields.paymentReceiptUrl;
+      }
+      if (partialFields.nextOfKin !== undefined) {
+        dbPartial.next_of_kin = typeof partialFields.nextOfKin === 'object' ? JSON.stringify(partialFields.nextOfKin) : partialFields.nextOfKin;
+        if (partialFields.nextOfKin?.phone) {
+          dbPartial.next_of_kin_phone = partialFields.nextOfKin.phone;
+        }
+      }
+      if (partialFields.approvedAt !== undefined) dbPartial.approved_at = partialFields.approvedAt;
+      if (partialFields.approvedBy !== undefined) dbPartial.approved_by = partialFields.approvedBy;
+
+      const { data, error } = await supabase
+        .from('members')
+        .update(dbPartial)
+        .eq('id', memberId)
+        .select()
+        .single();
+
+      if (!error && data) {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('nnepef_db_changed', { detail: { table: 'members' } }));
+        }
+        return mapSupabaseRowToMember(data);
+      }
+    } catch (clientErr) {
+      console.warn('[updateMemberFieldsInSupabase] Client update error:', clientErr);
+    }
+  }
+
+  return null;
 }
 
 export const updateMemberFieldsInSQLite = updateMemberFieldsInSupabase;

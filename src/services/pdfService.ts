@@ -291,9 +291,9 @@ export async function downloadMemberProfilePdf(member: Member, settings?: ForumS
   }
 
   doc.setFillColor(241, 245, 249);
-  doc.roundedRect(margin, currentY, pageWidth - margin * 2, 22, 2, 2, 'F');
+  doc.roundedRect(margin, currentY, pageWidth - margin * 2, 28, 2, 2, 'F');
   doc.setDrawColor(203, 213, 225);
-  doc.roundedRect(margin, currentY, pageWidth - margin * 2, 22, 2, 2, 'S');
+  doc.roundedRect(margin, currentY, pageWidth - margin * 2, 28, 2, 2, 'S');
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8);
@@ -305,20 +305,37 @@ export async function downloadMemberProfilePdf(member: Member, settings?: ForumS
   doc.setTextColor(71, 85, 105);
   doc.text(`Approved By: ${member.approvedBy || (member.status === 'approved' ? 'Super Admin Secretariat' : 'Pending Authorization')}`, margin + 4, currentY + 10);
   doc.text(`Approval Date: ${member.approvedAt ? new Date(member.approvedAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : (member.status === 'approved' ? 'Confirmed' : 'Pending')}`, margin + 4, currentY + 14);
-  doc.text(`Printed On: ${new Date().toLocaleString('en-GB')} • Document Ref: NNEPEF-DOC-${member.id.substring(0, 8).toUpperCase()}`, margin + 4, currentY + 18);
+  doc.text(`Verification Ref: ${member.verificationCode || member.applicationReference || member.id}`, margin + 4, currentY + 18);
+  doc.text(`Printed On: ${new Date().toLocaleString('en-GB')} • Doc Ref: NNEPEF-SLIP-${member.id.substring(0, 8).toUpperCase()}`, margin + 4, currentY + 22);
 
-  // Stamp / Signature Block
-  const sigX = pageWidth - margin - 50;
+  // Dedicated Secretary General Signature Block
+  const sigX = pageWidth - margin - 55;
+  const sigData = await getBase64ImageFromUrl(OFFICIAL_SECRETARY_SIGNATURE, [
+    OFFICIAL_SECRETARY_SIGNATURE,
+    '/secretary-signature.png',
+    '/secretary-signature.jpg'
+  ]);
+  if (sigData) {
+    try {
+      const sigFormat = sigData.includes('image/jpeg') ? 'JPEG' : 'PNG';
+      doc.addImage(sigData, sigFormat, sigX + 2, currentY + 2, 40, 14);
+    } catch (e) {
+      console.warn('[PDF Service] Signature render notice:', e);
+    }
+  }
+
+  doc.setDrawColor(10, 46, 115);
+  doc.setLineWidth(0.5);
+  doc.line(sigX, currentY + 18, sigX + 46, currentY + 18);
+
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.5);
   doc.setTextColor(15, 23, 42);
-  doc.text('NATIONAL SECRETARIAT', sigX, currentY + 6);
-  doc.setDrawColor(10, 46, 115);
-  doc.line(sigX, currentY + 15, sigX + 44, currentY + 15);
-  doc.setFont('helvetica', 'normal');
+  doc.text('Engr. Hussaini Ali', sigX + 23, currentY + 21.5, { align: 'center' });
+
   doc.setFontSize(6.5);
-  doc.setTextColor(100, 116, 139);
-  doc.text('Authorized Seal & Signature', sigX + 5, currentY + 19);
+  doc.setTextColor(10, 46, 115);
+  doc.text('Secretary General, N-NEPEF 2020', sigX + 23, currentY + 25, { align: 'center' });
 
   // Footer
   doc.setFontSize(6.5);
@@ -326,7 +343,7 @@ export async function downloadMemberProfilePdf(member: Member, settings?: ForumS
   doc.text('This official document is generated from the central N-NEPEF 2020 database repository. Verification: https://nepef.org.ng/verify', pageWidth / 2, pageHeight - 4, { align: 'center' });
 
   // Save the PDF
-  const filename = `NNEPEF-Profile-${(member.membershipId || member.fullName || 'Member').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
+  const filename = `NNEPEF-OfficialSlip-${(member.membershipId || member.fullName || 'Member').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
   doc.save(filename);
 }
 

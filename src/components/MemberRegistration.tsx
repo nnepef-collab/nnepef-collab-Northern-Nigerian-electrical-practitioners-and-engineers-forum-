@@ -23,11 +23,15 @@ import {
   Clock,
   Sparkles,
   Building2,
-  Share2
+  Share2,
+  Printer,
+  Loader2
 } from 'lucide-react';
+import { OfficialApprovalSlipModal } from './OfficialApprovalSlipModal';
 
 interface MemberRegistrationProps {
   settings?: ForumSettings;
+  members?: Member[];
   onRegister: (newMember: Member) => Promise<Member | void>;
   setCurrentView: (view: string) => void;
 }
@@ -68,16 +72,19 @@ const IDENTIFICATION_TYPES = [
 
 export const MemberRegistration: React.FC<MemberRegistrationProps> = ({ 
   settings, 
+  members,
   onRegister, 
   setCurrentView 
 }) => {
   const [submittedMember, setSubmittedMember] = useState<Member | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [sessionRegistrationId, setSessionRegistrationId] = useState<string | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [copiedAccNum, setCopiedAccNum] = useState(false);
   const [copiedAccName, setCopiedAccName] = useState(false);
   const [copiedRef, setCopiedRef] = useState(false);
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
+  const [showSlipModal, setShowSlipModal] = useState(false);
 
   const initialForm = {
     // 1. Personal
@@ -144,18 +151,19 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
   }, [formData, submittedMember]);
 
   const bankAccounts = settings?.bankAccounts || [];
-  const activeBank = bankAccounts.find(b => b.isActive) || bankAccounts[0] || (settings?.bankName ? {
+  const activeBank = bankAccounts.find(b => b.isActive) || (bankAccounts.length > 0 ? bankAccounts[0] : null) || (settings?.bankName && settings?.bankAccountNumber ? {
     id: 'active',
     bankName: settings.bankName,
     accountName: settings.bankAccountName || '',
-    accountNumber: settings.bankAccountNumber || '',
+    accountNumber: settings.bankAccountNumber,
     branch: '',
     paymentInstructions: settings.paymentInstructions
   } : null);
 
-  const bankName = activeBank?.bankName || 'First Bank of Nigeria';
-  const bankAccountName = activeBank?.accountName || 'Northern Nigerian Electrical Practitioners & Engineers Forum';
-  const bankAccountNumber = activeBank?.accountNumber || '2034981122';
+  const bankName = activeBank?.bankName || '';
+  const bankAccountName = activeBank?.accountName || '';
+  const bankAccountNumber = activeBank?.accountNumber || '';
+  const isBankConfigured = Boolean(activeBank && bankName && bankAccountNumber);
   const registrationFee = settings?.annualFee || (settings as any)?.registrationFee || 10000;
 
   const copyToClipboard = (text: string, type: 'num' | 'name') => {
@@ -171,6 +179,7 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     setValidationError(null);
 
     // Validation checks
@@ -205,9 +214,19 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
       const defaultPassport = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=400';
       const defaultReceipt = 'https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?auto=format&fit=crop&q=80&w=600';
 
-      const memberId = generateUUID();
+      const cleanPhone = formData.phone.trim();
+      const cleanNin = formData.nin.trim();
+      const existingMember = members?.find(m => 
+        (cleanPhone && m.phone && m.phone.trim() === cleanPhone) ||
+        (cleanNin && m.nin && m.nin.trim() === cleanNin)
+      );
+
+      const memberId = existingMember ? existingMember.id : (sessionRegistrationId || generateUUID());
+      if (!sessionRegistrationId && memberId) {
+        setSessionRegistrationId(memberId);
+      }
       const refSuffix = Math.floor(100000 + Math.random() * 900000);
-      const appRef = `APP-${new Date().getFullYear()}-${refSuffix}`;
+      const appRef = existingMember?.applicationReference || `APP-${new Date().getFullYear()}-${refSuffix}`;
 
       const newMember: Member = {
         id: memberId,
@@ -261,6 +280,9 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
 
       const result = await onRegister(newMember);
       const confirmed = (result && typeof result === 'object' && 'id' in result) ? result : newMember;
+      if (confirmed && confirmed.id) {
+        setSessionRegistrationId(confirmed.id);
+      }
 
       try {
         sessionStorage.removeItem('nnepef_registration_draft_v2');
@@ -381,37 +403,62 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
             </ul>
           </div>
 
-          {/* Action Buttons */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
-            <button
-              onClick={handleDownloadProfile}
-              disabled={isDownloadingPdf}
-              className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-[#0A2E73] hover:bg-[#08245a] text-white font-bold text-xs shadow-md transition-all cursor-pointer"
-            >
-              <Download className="w-4 h-4 text-[#2EA3F2]" />
-              <span>{isDownloadingPdf ? 'Generating PDF...' : 'Download Application Dossier (PDF)'}</span>
-            </button>
+          {/* Action Buttons: Choose Print or Download PDF */}
+          <div className="space-y-3 pt-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                onClick={handleDownloadProfile}
+                disabled={isDownloadingPdf}
+                className="flex items-center justify-center gap-2 py-3.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-75 text-white font-bold text-xs shadow-md transition-all cursor-pointer active:scale-95"
+                title="Download Official Slip as PDF file with authentic signature and logo"
+              >
+                {isDownloadingPdf ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-emerald-200" />
+                ) : (
+                  <Download className="w-4 h-4 text-emerald-200" />
+                )}
+                <span>{isDownloadingPdf ? 'Generating PDF...' : 'Download PDF Slip (With Signature & Logo)'}</span>
+              </button>
 
-            <button
-              onClick={() => setCurrentView('verify')}
-              className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 font-bold text-xs transition-all cursor-pointer"
-            >
-              <ShieldCheck className="w-4 h-4 text-emerald-600" />
-              <span>Verify Portal / Search Registry</span>
-            </button>
+              <button
+                onClick={() => setShowSlipModal(true)}
+                className="flex items-center justify-center gap-2 py-3.5 px-4 rounded-xl bg-[#0A2E73] hover:bg-sky-900 text-white font-bold text-xs shadow-md transition-all cursor-pointer active:scale-95"
+                title="Open and print the official slip or save directly"
+              >
+                <Printer className="w-4 h-4 text-[#2EA3F2]" />
+                <span>Print Official Slip (With Signature & Logo)</span>
+              </button>
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-1">
+              <button
+                onClick={() => setCurrentView('verify')}
+                className="w-full sm:w-auto flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 font-bold text-xs transition-all cursor-pointer"
+              >
+                <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                <span>Verify Portal / Search Registry</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setSubmittedMember(null);
+                  setFormData(initialForm);
+                }}
+                className="text-xs text-sky-700 dark:text-sky-400 hover:underline font-semibold"
+              >
+                Register Another Member
+              </button>
+            </div>
           </div>
 
-          <div className="text-center pt-2">
-            <button
-              onClick={() => {
-                setSubmittedMember(null);
-                setFormData(initialForm);
-              }}
-              className="text-xs text-sky-700 dark:text-sky-400 hover:underline font-semibold"
-            >
-              Register Another Member
-            </button>
-          </div>
+          {/* Official Approval / Registration Slip Modal */}
+          {showSlipModal && submittedMember && (
+            <OfficialApprovalSlipModal
+              member={submittedMember}
+              settings={settings}
+              onClose={() => setShowSlipModal(false)}
+            />
+          )}
 
         </div>
 
@@ -993,63 +1040,77 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
           </div>
 
           {/* Official Bank Account Information Box */}
-          <div className="bg-slate-900 text-white rounded-2xl p-5 sm:p-6 space-y-4 shadow-md border border-slate-800">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
-              <div>
-                <span className="text-[10px] text-sky-400 font-bold uppercase tracking-widest">
-                  Official N-NEPEF Bank Account
-                </span>
-                <h4 className="font-display font-bold text-lg text-white">
-                  {bankName}
+          {isBankConfigured ? (
+            <div className="bg-slate-900 text-white rounded-2xl p-5 sm:p-6 space-y-4 shadow-md border border-slate-800">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                <div>
+                  <span className="text-[10px] text-sky-400 font-bold uppercase tracking-widest">
+                    Official N-NEPEF Bank Account
+                  </span>
+                  <h4 className="font-display font-bold text-lg text-white">
+                    {bankName}
+                  </h4>
+                </div>
+                <div className="px-3 py-1 rounded-lg bg-[#0A2E73] border border-[#2EA3F2]/40 text-xs font-bold text-white">
+                  Fee: ₦{Number(registrationFee).toLocaleString()}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Account Number with 1-click copy */}
+                <div className="bg-slate-950/60 rounded-xl p-3 border border-slate-800 flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] text-slate-400 block font-semibold">Account Number</span>
+                    <span className="font-mono text-base font-extrabold text-[#2EA3F2] tracking-wider">
+                      {bankAccountNumber}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => copyToClipboard(bankAccountNumber, 'num')}
+                    className="px-2.5 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 text-xs font-bold flex items-center gap-1 transition-all cursor-pointer"
+                  >
+                    {copiedAccNum ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copiedAccNum ? 'Copied!' : 'Copy'}</span>
+                  </button>
+                </div>
+
+                {/* Account Name with 1-click copy */}
+                <div className="bg-slate-950/60 rounded-xl p-3 border border-slate-800 flex items-center justify-between">
+                  <div className="truncate mr-2">
+                    <span className="text-[10px] text-slate-400 block font-semibold">Account Name</span>
+                    <span className="text-xs font-bold text-slate-200 truncate block">
+                      {bankAccountName}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => copyToClipboard(bankAccountName, 'name')}
+                    className="px-2.5 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 text-xs font-bold flex items-center gap-1 transition-all flex-shrink-0 cursor-pointer"
+                  >
+                    {copiedAccName ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copiedAccName ? 'Copied!' : 'Copy'}</span>
+                  </button>
+                </div>
+              </div>
+
+              <p className="text-[11px] text-slate-300 leading-relaxed pt-1">
+                <strong>Instructions:</strong> Use your <strong>Full Name</strong> as the transfer description/memo. After payment, take a screenshot or photo of the debit receipt and upload it below.
+              </p>
+            </div>
+          ) : (
+            <div className="bg-slate-900 text-white rounded-2xl p-5 sm:p-6 space-y-3 shadow-md border border-amber-500/30">
+              <div className="flex items-center gap-2 text-amber-400">
+                <AlertTriangle className="w-5 h-5 flex-shrink-0" />
+                <h4 className="font-display font-bold text-sm text-amber-300">
+                  Payment Account Not Yet Configured
                 </h4>
               </div>
-              <div className="px-3 py-1 rounded-lg bg-[#0A2E73] border border-[#2EA3F2]/40 text-xs font-bold text-white">
-                Fee: ₦{Number(registrationFee).toLocaleString()}
-              </div>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Official payment bank details have not yet been configured by the Administrator. If you have made payment through official state chapter arrangements, you may still upload your payment teller or receipt below. Otherwise, please contact the Administrator for payment guidance.
+              </p>
             </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {/* Account Number with 1-click copy */}
-              <div className="bg-slate-950/60 rounded-xl p-3 border border-slate-800 flex items-center justify-between">
-                <div>
-                  <span className="text-[10px] text-slate-400 block font-semibold">Account Number</span>
-                  <span className="font-mono text-base font-extrabold text-[#2EA3F2] tracking-wider">
-                    {bankAccountNumber}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => copyToClipboard(bankAccountNumber, 'num')}
-                  className="px-2.5 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 text-xs font-bold flex items-center gap-1 transition-all cursor-pointer"
-                >
-                  {copiedAccNum ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copiedAccNum ? 'Copied!' : 'Copy'}</span>
-                </button>
-              </div>
-
-              {/* Account Name with 1-click copy */}
-              <div className="bg-slate-950/60 rounded-xl p-3 border border-slate-800 flex items-center justify-between">
-                <div className="truncate mr-2">
-                  <span className="text-[10px] text-slate-400 block font-semibold">Account Name</span>
-                  <span className="text-xs font-bold text-slate-200 truncate block">
-                    {bankAccountName}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => copyToClipboard(bankAccountName, 'name')}
-                  className="px-2.5 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 text-xs font-bold flex items-center gap-1 transition-all flex-shrink-0 cursor-pointer"
-                >
-                  {copiedAccName ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copiedAccName ? 'Copied!' : 'Copy'}</span>
-                </button>
-              </div>
-            </div>
-
-            <p className="text-[11px] text-slate-300 leading-relaxed pt-1">
-              <strong>Instructions:</strong> Use your <strong>Full Name</strong> as the transfer description/memo. After payment, take a screenshot or photo of the debit receipt and upload it below.
-            </p>
-          </div>
+          )}
 
           {/* Receipt Photo Upload */}
           <DualImageUpload

@@ -128,9 +128,9 @@ export const OfficialApprovalSlipModal: React.FC<OfficialApprovalSlipModalProps>
             </div>
 
             <div className="text-right flex flex-col items-end flex-shrink-0">
-              <span className="inline-flex items-center gap-1 px-3 py-1 bg-emerald-100 text-emerald-900 border border-emerald-400 rounded-full font-mono text-[10px] font-extrabold tracking-wider uppercase shadow-sm">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
-                OFFICIALLY APPROVED
+              <span className={`inline-flex items-center gap-1 px-3 py-1 ${member.status === 'approved' ? 'bg-emerald-100 text-emerald-900 border-emerald-400' : 'bg-amber-100 text-amber-900 border-amber-400'} border rounded-full font-mono text-[10px] font-extrabold tracking-wider uppercase shadow-sm`}>
+                <CheckCircle2 className={`w-3.5 h-3.5 ${member.status === 'approved' ? 'text-emerald-700' : 'text-amber-700'}`} />
+                {member.status === 'approved' ? 'OFFICIALLY APPROVED' : 'REGISTERED APPLICANT'}
               </span>
               <p className="text-xs font-mono font-bold text-slate-900 pt-2">
                 SLIP REF: {verificationCode}
@@ -144,10 +144,10 @@ export const OfficialApprovalSlipModal: React.FC<OfficialApprovalSlipModalProps>
           {/* Slip Title Banner */}
           <div className="bg-[#0A2E73] text-white py-2 px-4 rounded-xl flex items-center justify-between shadow-sm">
             <span className="font-extrabold text-xs sm:text-sm tracking-wide uppercase font-serif">
-              Official Membership Certificate &amp; Approval Slip
+              {member.status === 'approved' ? 'Official Membership Certificate & Approval Slip' : 'Official Membership Registration & Verification Slip'}
             </span>
-            <span className="text-[10px] font-mono text-sky-200">
-              Status: ACTIVE / CERTIFIED
+            <span className="text-[10px] font-mono text-sky-200 uppercase">
+              Status: {member.status === 'approved' ? 'ACTIVE / CERTIFIED' : 'PENDING RATIFICATION'}
             </span>
           </div>
 

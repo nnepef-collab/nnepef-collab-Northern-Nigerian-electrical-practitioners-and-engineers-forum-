@@ -11,7 +11,7 @@
 
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { Member, AdminAccount } from '../types';
-import { fetchMembersFromSupabase, saveMemberToSupabase } from './supabaseService';
+import { fetchMembersFromSupabase, saveMemberToSupabase, mapSupabaseRowToMember } from './supabaseService';
 
 export interface AuthResponse {
   success: boolean;
@@ -61,33 +61,7 @@ export async function signInUser(identifier: string, password: string): Promise<
             .single();
 
           if (profile) {
-            const memberObj: Member = {
-              id: profile.id,
-              membershipId: profile.membership_id || '',
-              fullName: profile.full_name,
-              gender: profile.gender || 'Male',
-              dob: profile.dob || profile.date_of_birth || '',
-              dateOfBirth: profile.date_of_birth || profile.dob || '',
-              phone: profile.phone || '',
-              email: profile.email || emailToUse,
-              nin: profile.nin || profile.nin_number || '',
-              ninNumber: profile.nin_number || profile.nin || '',
-              state: profile.state,
-              lga: profile.lga,
-              address: profile.address || profile.residential_address || '',
-              residentialAddress: profile.residential_address || profile.address || '',
-              occupation: profile.occupation || '',
-              specialization: profile.specialization || '',
-              yearsOfExperience: profile.years_of_experience || 0,
-              company: profile.company || '',
-              passportUrl: profile.passport_url || profile.passport_photo_url || '',
-              paymentReceiptUrl: profile.payment_receipt_url || '',
-              status: profile.status,
-              role: profile.role || 'Member',
-              position: profile.position || 'Member',
-              registeredAt: profile.registered_at || new Date().toISOString(),
-              approvedAt: profile.approved_at
-            };
+            const memberObj: Member = mapSupabaseRowToMember(profile);
 
             const isSuspended = (profile.status || '').toLowerCase() === 'suspended' || (profile.status || '').toLowerCase() === 'inactive';
             
@@ -397,33 +371,7 @@ export async function restoreSupabaseSession(): Promise<AuthResponse | null> {
       .single();
 
     if (profile) {
-      const memberObj: Member = {
-        id: profile.id,
-        membershipId: profile.membership_id || '',
-        fullName: profile.full_name,
-        gender: profile.gender || 'Male',
-        dob: profile.dob || profile.date_of_birth || '',
-        dateOfBirth: profile.date_of_birth || profile.dob || '',
-        phone: profile.phone || '',
-        email: profile.email || userEmail,
-        nin: profile.nin || profile.nin_number || '',
-        ninNumber: profile.nin_number || profile.nin || '',
-        state: profile.state,
-        lga: profile.lga,
-        address: profile.address || profile.residential_address || '',
-        residentialAddress: profile.residential_address || profile.address || '',
-        occupation: profile.occupation || '',
-        specialization: profile.specialization || '',
-        yearsOfExperience: profile.years_of_experience || 0,
-        company: profile.company || '',
-        passportUrl: profile.passport_url || profile.passport_photo_url || '',
-        paymentReceiptUrl: profile.payment_receipt_url || '',
-        status: profile.status,
-        role: profile.role || 'Member',
-        position: profile.position || 'Member',
-        registeredAt: profile.registered_at || new Date().toISOString(),
-        approvedAt: profile.approved_at
-      };
+      const memberObj: Member = mapSupabaseRowToMember(profile);
 
       const isSuspended = (profile.status || '').toLowerCase() === 'suspended' || (profile.status || '').toLowerCase() === 'inactive';
 

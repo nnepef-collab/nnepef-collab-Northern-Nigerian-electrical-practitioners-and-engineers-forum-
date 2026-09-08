@@ -48,51 +48,12 @@ async function fetchValidWasmBinary(urls: string[]): Promise<ArrayBuffer | null>
 }
 
 /**
- * Initialize Browser SQLite WebAssembly Database Engine
- * Uses verified WASM binary buffer to prevent MIME/instantiation errors
+ * Browser-Compatible SQLite 3 (WASM) Storage Engine - DISABLED
+ * Supabase is the sole production database. SQLite fallback is disabled to prevent
+ * divergence or unintended local persistence.
  */
 export async function getBrowserSQLiteDatabase(): Promise<Database> {
-  if (browserDb) return browserDb;
-  if (initPromise) return initPromise;
-
-  initPromise = (async () => {
-    try {
-      lastInitError = null;
-      let SQL: any;
-
-      // Try loading verified binary from local or CDN
-      const candidateUrls = [
-        '/sql-wasm.wasm',
-        `${window.location.origin}/sql-wasm.wasm`,
-        'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.14.1/sql-wasm.wasm',
-        'https://unpkg.com/sql.js@1.14.1/dist/sql-wasm.wasm'
-      ];
-
-      const wasmBinary = await fetchValidWasmBinary(candidateUrls);
-
-      if (wasmBinary) {
-        SQL = await initSqlJs({ wasmBinary });
-      } else {
-        // Fallback to standard locateFile configuration
-        SQL = await initSqlJs({
-          locateFile: (file: string) => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.14.1/${file}`
-        });
-      }
-
-      const dbInstance = new SQL.Database();
-      await initializeBrowserSchemaAndData(dbInstance);
-      browserDb = dbInstance;
-      return dbInstance;
-    } catch (err: any) {
-      const errorMsg = err?.message || String(err);
-      lastInitError = `SQLite WASM Engine Init Error: ${errorMsg}`;
-      console.error('[Browser SQLite WASM Error]:', lastInitError, err);
-      initPromise = null;
-      throw new Error(lastInitError);
-    }
-  })();
-
-  return initPromise;
+  throw new Error('SQLite WASM engine is disabled. Supabase PostgreSQL is the sole database.');
 }
 
 /**

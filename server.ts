@@ -120,6 +120,47 @@ async function startServer() {
   // ==========================================================================
 
   function cleanMemberDbPayload(member: any) {
+    let qualObj: any = {};
+    const rawQual = member.qualification_details || member.qualificationDetails;
+    if (rawQual) {
+      if (typeof rawQual === 'object' && rawQual !== null) {
+        qualObj = rawQual;
+      } else if (typeof rawQual === 'string') {
+        try {
+          qualObj = JSON.parse(rawQual);
+        } catch (e) {}
+      }
+    }
+
+    const educationDetails = {
+      institution: (member.institution || qualObj.institution || member.company_name || member.company || '').trim(),
+      courseOfStudy: (member.courseOfStudy || qualObj.courseOfStudy || member.course_of_study || '').trim(),
+      graduationYear: (member.graduationYear || qualObj.graduationYear || member.graduation_year || '').trim(),
+      highestQualification: (member.highestQualification || qualObj.highestQualification || member.qualification || '').trim(),
+      otherQualifications: (member.otherQualifications || qualObj.otherQualifications || member.other_qualifications || '').trim(),
+      professionalCertificates: (member.professionalCertificates || qualObj.professionalCertificates || member.professional_certificates || '').trim()
+    };
+
+    let nextOfKinObj = member.nextOfKin || member.next_of_kin;
+    if (typeof nextOfKinObj === 'string') {
+      try {
+        nextOfKinObj = JSON.parse(nextOfKinObj);
+      } catch (e) {
+        nextOfKinObj = { name: nextOfKinObj };
+      }
+    }
+    if (!nextOfKinObj || typeof nextOfKinObj !== 'object') {
+      nextOfKinObj = {};
+    }
+
+    const cleanNextOfKin = {
+      name: String(nextOfKinObj.name || '').trim(),
+      relation: String(nextOfKinObj.relation || '').trim() || 'Spouse',
+      phone: String(nextOfKinObj.phone || member.next_of_kin_phone || '').trim(),
+      address: String(nextOfKinObj.address || '').trim(),
+      altPhone: nextOfKinObj.altPhone ? String(nextOfKinObj.altPhone).trim() : undefined
+    };
+
     const payload: Record<string, any> = {
       full_name: (member.fullName || member.full_name || member.name || '').trim(),
       gender: member.gender || 'Male',
@@ -132,14 +173,17 @@ async function startServer() {
       residential_address: member.residentialAddress || member.residential_address || member.address ? String(member.residentialAddress || member.residential_address || member.address).trim() : null,
       occupation: member.occupation ? String(member.occupation).trim() : 'Practitioner',
       specialization: member.specialization || null,
-      qualification: member.qualification || member.highestQualification || null,
+      qualification: educationDetails.highestQualification || member.highestQualification || member.qualification || null,
+      qualification_details: JSON.stringify(educationDetails),
+      company_name: educationDetails.institution || member.company || member.company_name || null,
       years_of_experience: Number(member.yearsOfExperience || member.years_of_experience) || 0,
       membership_type: member.membershipType || member.membership_type || 'Full Member',
       passport_url: member.passportUrl || member.passportPhotoUrl || member.passport_url || member.passport_photo_url || member.photoUrl || member.photo_url || null,
       payment_receipt_url: member.paymentReceiptUrl || member.payment_receipt_url || null,
       status: (member.status || 'pending').toLowerCase(),
       position: member.position || 'Member',
-      next_of_kin: member.nextOfKin || member.next_of_kin || {},
+      next_of_kin: JSON.stringify(cleanNextOfKin),
+      next_of_kin_phone: cleanNextOfKin.phone || null,
       updated_at: new Date().toISOString()
     };
 
@@ -150,6 +194,7 @@ async function startServer() {
     if (member.registeredAt || member.registered_at) payload.registered_at = member.registeredAt || member.registered_at;
     if (member.expiryDate || member.expiry_date) payload.expiry_date = member.expiryDate || member.expiry_date;
     if (member.approvedBy || member.approved_by) payload.approved_by = member.approvedBy || member.approved_by;
+    if (member.approvedAt || member.approved_at) payload.approved_at = member.approvedAt || member.approved_at;
     if (member.rejectionReason || member.rejection_reason) payload.rejection_reason = member.rejectionReason || member.rejection_reason;
 
     return payload;
@@ -165,97 +210,185 @@ async function startServer() {
     const payload = cleanMemberDbPayload(rawMember);
 
     try {
-      // 1. If registering a new or pending member, try public_register_member RPC with exact 9 scalar parameters
-      if (payload.status === 'pending' || !payload.id || payload.id.startsWith('m-')) {
+      // 1. UNCONDITIONAL DUPLICATE PREVENTION:
+      // Search Supabase PostgreSQL for an existing member record matching Phone, NIN, or Email FIRST.
+      // Unauthenticated clients cannot reliably see pending records due to RLS, so this server-side check is authoritative.
+      const rawPhone = payload.phone ? String(payload.phone).trim() : '';
+      const digitsOnlyPhone = rawPhone.replace(/\D/g, '');
+      const last10Phone = digitsOnlyPhone.length >= 10 ? digitsOnlyPhone.slice(-10) : digitsOnlyPhone;
+
+      const cleanNin = payload.nin ? String(payload.nin).replace(/\D/g, '').trim() : '';
+      const cleanEmail = payload.email ? String(payload.email).trim().toLowerCase() : '';
+
+      let existingRow: any = null;
+
+      // UNCONDITIONALLY search by Phone, NIN, or Email FIRST (regardless of payload.id)
+      const orFilters: string[] = [];
+      if (rawPhone) {
+        orFilters.push(`phone.eq.${encodeURIComponent(rawPhone)}`);
+      }
+      if (last10Phone && last10Phone.length === 10) {
+        orFilters.push(`phone.eq.${encodeURIComponent('0' + last10Phone)}`);
+        orFilters.push(`phone.eq.${encodeURIComponent('+234' + last10Phone)}`);
+        orFilters.push(`phone.eq.${encodeURIComponent('234' + last10Phone)}`);
+      }
+      if (cleanNin && cleanNin.length >= 7) {
+        orFilters.push(`nin.eq.${encodeURIComponent(cleanNin)}`);
+      }
+      if (cleanEmail && cleanEmail.includes('@') && !cleanEmail.endsWith('@temp.com')) {
+        orFilters.push(`email.ilike.${encodeURIComponent(cleanEmail)}`);
+      }
+
+      const uniqueFilters = Array.from(new Set(orFilters));
+
+      if (uniqueFilters.length > 0) {
         try {
-          const rpcRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/public_register_member`, {
-            method: 'POST',
+          const checkRes = await fetch(`${SUPABASE_URL}/rest/v1/members?or=(${uniqueFilters.join(',')})&select=*&order=created_at.asc&limit=1`, {
             headers: {
               'apikey': effectiveKey,
-              'Authorization': `Bearer ${effectiveKey}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              p_email: payload.email,
-              p_full_name: payload.full_name,
-              p_lga: payload.lga || 'Kano Municipal',
-              p_nin: payload.nin,
-              p_occupation: payload.occupation || 'Practitioner',
-              p_phone: payload.phone,
-              p_position: payload.position || 'Member',
-              p_qualification: payload.qualification || '',
-              p_state: payload.state || 'Kano'
-            })
+              'Authorization': `Bearer ${effectiveKey}`
+            }
           });
-
-          if (rpcRes.ok) {
-            const rpcJson = await rpcRes.json();
-            console.log('[Supabase RPC Success] public_register_member succeeded:', rpcJson);
-            if (rpcJson && rpcJson.member_id) {
-              payload.id = rpcJson.member_id;
-              payload.verification_code = rpcJson.verification_code || payload.verification_code;
-              payload.application_reference = rpcJson.application_reference || payload.application_reference;
-
-              // Immediately patch profile details
-              await fetch(`${SUPABASE_URL}/rest/v1/members?id=eq.${encodeURIComponent(payload.id)}`, {
-                method: 'PATCH',
-                headers: {
-                  'apikey': effectiveKey,
-                  'Authorization': `Bearer ${effectiveKey}`,
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                  gender: payload.gender,
-                  date_of_birth: payload.date_of_birth,
-                  residential_address: payload.residential_address,
-                  specialization: payload.specialization,
-                  years_of_experience: payload.years_of_experience,
-                  membership_type: payload.membership_type,
-                  passport_url: payload.passport_url,
-                  payment_receipt_url: payload.payment_receipt_url,
-                  next_of_kin: payload.next_of_kin
-                })
-              }).catch(() => {});
-
-              return { success: true, status: 200, member: payload };
+          if (checkRes.ok) {
+            const existingRows = await checkRes.json();
+            if (Array.isArray(existingRows) && existingRows.length > 0 && existingRows[0].id) {
+              existingRow = existingRows[0];
+              console.log('[Supabase Sync] Matched existing member by Phone/NIN/Email to prevent duplicate record. ID:', existingRow.id, 'Phone:', existingRow.phone, 'NIN:', existingRow.nin);
             }
           }
-        } catch (rpcErr) {
-          console.warn('[Supabase RPC Registration Attempt Notice]:', rpcErr);
+        } catch (checkErr) {
+          console.warn('[Supabase Sync lookup notice]:', checkErr);
         }
       }
 
-      // 2. Direct POST to public.members (supports upsert via merge-duplicates)
+      // If not matched by Phone/NIN/Email, check if payload.id exists in database
+      if (!existingRow && payload.id && !payload.id.startsWith('m-')) {
+        try {
+          const idCheckRes = await fetch(`${SUPABASE_URL}/rest/v1/members?id=eq.${encodeURIComponent(payload.id)}&select=*&limit=1`, {
+            headers: {
+              'apikey': effectiveKey,
+              'Authorization': `Bearer ${effectiveKey}`
+            }
+          });
+          if (idCheckRes.ok) {
+            const idRows = await idCheckRes.json();
+            if (Array.isArray(idRows) && idRows.length > 0) {
+              existingRow = idRows[0];
+            }
+          }
+        } catch (idErr) {
+          console.warn('[Supabase Sync ID check notice]:', idErr);
+        }
+      }
+
+      // C) If an existing record was found, REUSE its ID and PRESERVE populated authentic fields:
+      if (existingRow) {
+        payload.id = existingRow.id;
+
+        // Preserve approved status so re-registration or profile update does not revoke approval
+        if (existingRow.status === 'approved') {
+          payload.status = 'approved';
+        }
+        if (existingRow.membership_id && !payload.membership_id) {
+          payload.membership_id = existingRow.membership_id;
+        }
+        if (existingRow.registered_at && !payload.registered_at) {
+          payload.registered_at = existingRow.registered_at;
+        }
+
+        // Preserve authentic passport photo if incoming is empty or placeholder
+        const isPlaceholderPassport = !payload.passport_url || payload.passport_url.includes('images.unsplash.com');
+        if (isPlaceholderPassport && existingRow.passport_url) {
+          payload.passport_url = existingRow.passport_url;
+        }
+
+        // Preserve authentic payment receipt if incoming is empty or placeholder
+        const isPlaceholderReceipt = !payload.payment_receipt_url || payload.payment_receipt_url.includes('images.unsplash.com');
+        if (isPlaceholderReceipt && existingRow.payment_receipt_url) {
+          payload.payment_receipt_url = existingRow.payment_receipt_url;
+        }
+
+        // Preserve and deep-merge qualification_details (School/Education info)
+        if (existingRow.qualification_details) {
+          try {
+            const prevQ = typeof existingRow.qualification_details === 'string' ? JSON.parse(existingRow.qualification_details) : existingRow.qualification_details;
+            const newQ = typeof payload.qualification_details === 'string' ? JSON.parse(payload.qualification_details) : payload.qualification_details;
+            const mergedQ = {
+              institution: newQ.institution || prevQ.institution || '',
+              courseOfStudy: newQ.courseOfStudy || prevQ.courseOfStudy || '',
+              graduationYear: newQ.graduationYear || prevQ.graduationYear || '',
+              highestQualification: newQ.highestQualification || prevQ.highestQualification || '',
+              otherQualifications: newQ.otherQualifications || prevQ.otherQualifications || '',
+              professionalCertificates: newQ.professionalCertificates || prevQ.professionalCertificates || ''
+            };
+            payload.qualification_details = JSON.stringify(mergedQ);
+            if (!payload.company_name && (prevQ.institution || existingRow.company_name)) {
+              payload.company_name = prevQ.institution || existingRow.company_name;
+            }
+          } catch (e) {}
+        }
+
+        // Preserve and deep-merge next of kin details
+        if (existingRow.next_of_kin) {
+          try {
+            const prevN = typeof existingRow.next_of_kin === 'string' ? JSON.parse(existingRow.next_of_kin) : existingRow.next_of_kin;
+            const newN = typeof payload.next_of_kin === 'string' ? JSON.parse(payload.next_of_kin) : payload.next_of_kin;
+            const mergedN = {
+              name: newN.name || prevN.name || '',
+              relation: newN.relation || prevN.relation || 'Spouse',
+              phone: newN.phone || prevN.phone || '',
+              address: newN.address || prevN.address || ''
+            };
+            payload.next_of_kin = JSON.stringify(mergedN);
+            if (!payload.next_of_kin_phone && (newN.phone || prevN.phone || existingRow.next_of_kin_phone)) {
+              payload.next_of_kin_phone = newN.phone || prevN.phone || existingRow.next_of_kin_phone;
+            }
+          } catch (e) {}
+        }
+      }
+
+      // If still no valid UUID, generate a standard random UUID
+      if (!payload.id || payload.id.startsWith('m-')) {
+        payload.id = crypto.randomUUID();
+      }
+
+      // 2. Authoritative direct atomic UPSERT to Supabase PostgreSQL table public.members
+      // This preserves ALL fields in a single atomic transaction: photos, education info, next of kin!
       const response = await fetch(`${SUPABASE_URL}/rest/v1/members`, {
         method: 'POST',
         headers: {
           'apikey': effectiveKey,
           'Authorization': `Bearer ${effectiveKey}`,
           'Content-Type': 'application/json',
-          'Prefer': 'resolution=merge-duplicates,return=minimal'
+          'Prefer': 'resolution=merge-duplicates,return=representation'
         },
         body: JSON.stringify(payload)
       });
 
-      if (response.status === 201 || response.status === 200 || response.status === 204) {
-        console.log('[Supabase PostgreSQL INSERT/UPSERT Success] Status', response.status, 'for', payload.id, payload.full_name);
-        return { success: true, status: response.status, member: payload };
+      if (response.status === 201 || response.status === 200) {
+        const savedRows = await response.json().catch(() => [payload]);
+        const savedRow = Array.isArray(savedRows) && savedRows[0] ? savedRows[0] : payload;
+        console.log('[Supabase PostgreSQL UPSERT Success] Saved single record for:', savedRow.id, savedRow.full_name);
+        return { success: true, status: response.status, member: savedRow };
       }
 
-      // 3. If conflict or RLS requires PATCH, update with PATCH
+      // 3. If standard upsert returned 204 or conflict, execute targeted PATCH on id
       if (payload.id) {
         const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/members?id=eq.${encodeURIComponent(payload.id)}`, {
           method: 'PATCH',
           headers: {
             'apikey': effectiveKey,
             'Authorization': `Bearer ${effectiveKey}`,
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'Prefer': 'return=representation'
           },
           body: JSON.stringify(payload)
         });
         if (patchRes.ok) {
-          console.log('[Supabase PostgreSQL PATCH Success] Status', patchRes.status, 'for', payload.id);
-          return { success: true, status: patchRes.status, member: payload };
+          const patchRows = await patchRes.json().catch(() => [payload]);
+          const patchRow = Array.isArray(patchRows) && patchRows[0] ? patchRows[0] : payload;
+          console.log('[Supabase PostgreSQL PATCH Success] Saved single record for:', patchRow.id);
+          return { success: true, status: patchRes.status, member: patchRow };
         }
       }
 
@@ -305,6 +438,31 @@ async function startServer() {
       if (Array.isArray(data)) {
         for (const row of data) {
           if (row && row.id) {
+            let qualDetails: any = {};
+            if (row.qualification_details) {
+              if (typeof row.qualification_details === 'object') {
+                qualDetails = row.qualification_details;
+              } else if (typeof row.qualification_details === 'string') {
+                try {
+                  qualDetails = JSON.parse(row.qualification_details);
+                } catch (e) {}
+              }
+            }
+
+            let nextOfKinObj: any = {};
+            if (row.next_of_kin) {
+              if (typeof row.next_of_kin === 'object') {
+                nextOfKinObj = row.next_of_kin;
+              } else if (typeof row.next_of_kin === 'string') {
+                try {
+                  nextOfKinObj = JSON.parse(row.next_of_kin);
+                } catch (e) {}
+              }
+            }
+            if (!nextOfKinObj.phone && row.next_of_kin_phone) {
+              nextOfKinObj.phone = row.next_of_kin_phone;
+            }
+
             members.push({
               id: row.id,
               membershipId: row.membership_id || '',
@@ -328,11 +486,16 @@ async function startServer() {
               residentialAddress: row.residential_address || row.address || '',
               occupation: row.occupation || 'Practitioner',
               specialization: row.specialization || '',
-              highestQualification: row.qualification || '',
-              qualification: row.qualification || '',
+              highestQualification: qualDetails.highestQualification || row.qualification || '',
+              qualification: row.qualification || qualDetails.highestQualification || '',
+              courseOfStudy: qualDetails.courseOfStudy || '',
+              institution: qualDetails.institution || row.company_name || row.company || '',
+              graduationYear: qualDetails.graduationYear || '',
+              otherQualifications: qualDetails.otherQualifications || '',
+              professionalCertificates: qualDetails.professionalCertificates || '',
               membershipType: row.membership_type || 'Full Member',
               yearsOfExperience: row.years_of_experience || 0,
-              company: row.company || '',
+              company: qualDetails.institution || row.company || row.company_name || '',
               photoUrl: row.photo_url || row.passport_url || row.passport_photo_url || '',
               passportUrl: row.passport_url || row.passport_photo_url || '',
               passportPhotoUrl: row.passport_photo_url || row.passport_url || '',
@@ -349,7 +512,7 @@ async function startServer() {
               approvedBy: row.approved_by || undefined,
               rejectedBy: row.rejected_by || undefined,
               rejectionReason: row.rejection_reason || undefined,
-              nextOfKin: row.next_of_kin || {},
+              nextOfKin: nextOfKinObj,
               registeredAt: row.registered_at || new Date().toISOString()
             });
           }
@@ -425,7 +588,7 @@ async function startServer() {
       }
 
       const response = await fetch(
-        `${SUPABASE_URL}/rest/v1/members?membership_id=ilike.${encodeURIComponent(cleanId)}&select=id,membership_id,full_name,state,lga,occupation,specialization,membership_type,position,status,passport_url,passport_photo_url,issue_date,expiry_date,approved_at,registered_at,phone&limit=1`,
+        `${SUPABASE_URL}/rest/v1/members?membership_id=ilike.${encodeURIComponent(cleanId)}&select=id,membership_id,full_name,state,lga,occupation,specialization,membership_type,position,status,passport_url,expiry_date,approved_at,registered_at,phone&limit=1`,
         {
           headers: {
             'apikey': effectiveKey,
@@ -572,7 +735,50 @@ async function startServer() {
       if (updates.position !== undefined) payload.position = updates.position;
       if (updates.notes !== undefined) payload.notes = updates.notes;
       if (updates.paymentReceiptUrl !== undefined) payload.payment_receipt_url = updates.paymentReceiptUrl;
+      if (updates.passportUrl !== undefined) {
+        payload.passport_url = updates.passportUrl;
+        payload.passport_photo_url = updates.passportUrl;
+      }
+      if (updates.photoUrl !== undefined) payload.photo_url = updates.photoUrl;
       if (updates.expiryDate !== undefined) payload.expiry_date = updates.expiryDate;
+      if (updates.phone !== undefined) payload.phone = updates.phone;
+      if (updates.email !== undefined) payload.email = updates.email;
+      if (updates.state !== undefined) payload.state = updates.state;
+      if (updates.lga !== undefined) payload.lga = updates.lga;
+      if (updates.address !== undefined) {
+        payload.address = updates.address;
+        payload.residential_address = updates.address;
+      }
+      if (updates.residentialAddress !== undefined) {
+        payload.residential_address = updates.residentialAddress;
+        payload.address = updates.residentialAddress;
+      }
+      if (updates.specialization !== undefined) payload.specialization = updates.specialization;
+      if (updates.qualification !== undefined) payload.qualification = updates.qualification;
+      if (updates.highestQualification !== undefined) payload.qualification = updates.highestQualification;
+      if (updates.institution !== undefined) payload.company_name = updates.institution;
+      if (updates.company !== undefined) payload.company_name = updates.company;
+      if (updates.dateOfBirth !== undefined) payload.date_of_birth = updates.dateOfBirth;
+      if (updates.dob !== undefined) payload.date_of_birth = updates.dob;
+      if (updates.nextOfKin !== undefined) {
+        payload.next_of_kin = typeof updates.nextOfKin === 'object' ? JSON.stringify(updates.nextOfKin) : updates.nextOfKin;
+        if (updates.nextOfKin?.phone) {
+          payload.next_of_kin_phone = String(updates.nextOfKin.phone).trim();
+        }
+      }
+
+      // If education fields are updated, package qualification_details safely
+      if (updates.institution !== undefined || updates.courseOfStudy !== undefined || updates.graduationYear !== undefined || updates.highestQualification !== undefined || updates.qualification !== undefined) {
+        const eduObj = {
+          institution: updates.institution || updates.company || '',
+          courseOfStudy: updates.courseOfStudy || '',
+          graduationYear: updates.graduationYear || '',
+          highestQualification: updates.highestQualification || updates.qualification || '',
+          otherQualifications: updates.otherQualifications || '',
+          professionalCertificates: updates.professionalCertificates || ''
+        };
+        payload.qualification_details = JSON.stringify(eduObj);
+      }
 
       const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/members?id=eq.${encodeURIComponent(id)}`, {
         method: 'PATCH',

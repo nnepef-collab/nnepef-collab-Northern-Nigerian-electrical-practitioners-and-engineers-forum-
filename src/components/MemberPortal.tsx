@@ -13,6 +13,7 @@ import { handleImageError, getValidImageUrl, downloadFileSafely } from '../utils
 import { downloadApprovalSlipPdf } from '../services/pdfService';
 import { OFFICIAL_NNEPEF_LOGO } from '../constants/logo';
 import { OFFICIAL_SECRETARY_SIGNATURE } from '../constants/signature';
+import { safeMergeMember, parseNextOfKin, parseEducationDetails } from '../utils/memberHelpers';
 import { 
   User, 
   CreditCard, 
@@ -39,7 +40,8 @@ import {
   RefreshCw,
   FileCheck,
   Printer,
-  Loader2
+  Loader2,
+  GraduationCap
 } from 'lucide-react';
 
 interface MemberPortalProps {
@@ -97,15 +99,16 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
       if (lookupKey) {
         const fresh = await fetchApprovedMemberById(lookupKey);
         if (fresh) {
-          setCurrentUser(fresh);
-          onUpdateMember(fresh);
+          const merged = safeMergeMember(currentUser, fresh);
+          setCurrentUser(merged);
+          onUpdateMember(merged);
           setProfileForm({
-            phone: fresh.phone,
-            email: fresh.email,
-            address: fresh.address,
-            company: fresh.company,
-            specialization: fresh.specialization,
-            yearsOfExperience: fresh.yearsOfExperience
+            phone: merged.phone,
+            email: merged.email,
+            address: merged.address,
+            company: merged.company,
+            specialization: merged.specialization,
+            yearsOfExperience: merged.yearsOfExperience
           });
           setLastSyncedTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
         }
@@ -132,7 +135,7 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    const updated = { ...currentUser, ...profileForm };
+    const updated = safeMergeMember(currentUser, profileForm);
     onUpdateMember(updated);
     setCurrentUser(updated);
     setIsEditingProfile(false);
@@ -448,60 +451,75 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
             </div>
           </div>
 
-          {currentUser.status === 'approved' || (currentUser.status as string) === 'Active' ? (
-            <div className="bg-white dark:bg-slate-900 p-6 sm:p-8 rounded-3xl border-2 border-slate-200 dark:border-slate-700 shadow-xl space-y-6 relative overflow-hidden">
-              {/* Top Decorative Brand Bar */}
-              <div className="absolute top-0 left-0 right-0 h-2 bg-gradient-to-r from-[#0A2E73] via-[#2EA3F2] to-[#0A2E73]" />
-
-              {/* Security Watermark in Background */}
-              <div className="absolute inset-0 pointer-events-none flex items-center justify-center opacity-[0.04] dark:opacity-[0.03]">
-                <img src={slipLogo} alt="" className="w-96 h-96 object-contain" />
+          {currentUser.status !== 'approved' && (currentUser.status as string) !== 'Active' && (
+            <div className="p-4 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 rounded-2xl flex items-center gap-3">
+              <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0" />
+              <div className="text-xs text-amber-900 dark:text-amber-200">
+                <p className="font-bold">Application Status: {currentUser.status.toUpperCase()} (Under Review)</p>
+                <p className="text-[11px] text-amber-800 dark:text-amber-300">Your registration is received. You may self-download or print your Official Registration Slip below with authentic Secretary General signature and security watermark.</p>
               </div>
+            </div>
+          )}
 
-              {/* Header: Logo, Organization Title, Motto */}
-              <div className="relative flex flex-col sm:flex-row items-center sm:items-start justify-between border-b-2 border-slate-800 dark:border-slate-700 pb-5 gap-4">
-                <div className="flex items-center gap-4 text-center sm:text-left">
-                  <img
-                    src={slipLogo}
-                    alt="N-NEPEF Logo"
-                    className="w-16 h-16 sm:w-20 sm:h-20 object-contain flex-shrink-0"
-                    onError={(e) => {
-                      const target = e.currentTarget;
-                      if (target.src !== OFFICIAL_NNEPEF_LOGO) target.src = OFFICIAL_NNEPEF_LOGO;
-                    }}
-                  />
-                  <div>
-                    <h4 className="font-extrabold text-lg sm:text-xl text-[#0A2E73] dark:text-sky-400 uppercase tracking-tight font-serif leading-tight">
-                      {settings?.forumName || 'N-NEPEF 2020'}
-                    </h4>
-                    <p className="text-[11px] sm:text-xs font-bold text-slate-800 dark:text-slate-200 tracking-wide uppercase">
-                      Northern Nigerian Electrical Practitioners and Engineers Forum
-                    </p>
-                    <p className="text-[10px] text-amber-700 dark:text-amber-400 font-bold uppercase tracking-widest">
-                      Unity • Professionalism • Excellence
-                    </p>
-                    <p className="text-[9px] text-slate-500 dark:text-slate-400 font-mono pt-1">
-                      National Secretariat: {settings?.headquarters || 'No. 2 Gwarzo Road, Kano State, Nigeria'} • +234 906 343 5546
-                    </p>
-                  </div>
-                </div>
-                <div className="flex flex-col items-center sm:items-end gap-1.5 flex-shrink-0">
-                  <span className="px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 font-extrabold text-[10px] flex items-center gap-1.5 border border-emerald-300 dark:border-emerald-800">
-                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                    <span>OFFICIALLY APPROVED</span>
-                  </span>
-                  <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
-                    ID: {currentUser.membershipId || 'PENDING'}
-                  </span>
+          <div className="bg-white dark:bg-slate-900 p-6 sm:p-8 rounded-3xl border-2 border-slate-200 dark:border-slate-700 shadow-xl space-y-6 relative overflow-hidden">
+            {/* Top Decorative Brand Bar */}
+            <div className="absolute top-0 left-0 right-0 h-2 bg-gradient-to-r from-[#0A2E73] via-[#2EA3F2] to-[#0A2E73]" />
+
+            {/* Security Watermark in Background */}
+            <div className="absolute inset-0 pointer-events-none flex items-center justify-center opacity-[0.04] dark:opacity-[0.03]">
+              <img src={slipLogo} alt="" className="w-96 h-96 object-contain" />
+            </div>
+
+            {/* Header: Logo, Organization Title, Motto */}
+            <div className="relative flex flex-col sm:flex-row items-center sm:items-start justify-between border-b-2 border-slate-800 dark:border-slate-700 pb-5 gap-4">
+              <div className="flex items-center gap-4 text-center sm:text-left">
+                <img
+                  src={slipLogo}
+                  alt="N-NEPEF Logo"
+                  className="w-16 h-16 sm:w-20 sm:h-20 object-contain flex-shrink-0"
+                  onError={(e) => {
+                    const target = e.currentTarget;
+                    if (target.src !== OFFICIAL_NNEPEF_LOGO) target.src = OFFICIAL_NNEPEF_LOGO;
+                  }}
+                />
+                <div>
+                  <h4 className="font-extrabold text-lg sm:text-xl text-[#0A2E73] dark:text-sky-400 uppercase tracking-tight font-serif leading-tight">
+                    {settings?.forumName || 'N-NEPEF 2020'}
+                  </h4>
+                  <p className="text-[11px] sm:text-xs font-bold text-slate-800 dark:text-slate-200 tracking-wide uppercase">
+                    Northern Nigerian Electrical Practitioners and Engineers Forum
+                  </p>
+                  <p className="text-[10px] text-amber-700 dark:text-amber-400 font-bold uppercase tracking-widest">
+                    Unity • Professionalism • Excellence
+                  </p>
+                  <p className="text-[9px] text-slate-500 dark:text-slate-400 font-mono pt-1">
+                    National Secretariat: {settings?.headquarters || 'No. 2 Gwarzo Road, Kano State, Nigeria'} • +234 906 343 5546
+                  </p>
                 </div>
               </div>
-
-              {/* Slip Title Ribbon */}
-              <div className="relative py-2 px-4 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-center">
-                <span className="font-display font-black text-xs sm:text-sm tracking-widest text-[#0A2E73] dark:text-sky-400 uppercase">
-                  Official Membership Approval &amp; Registration Slip
+              <div className="flex flex-col items-center sm:items-end gap-1.5 flex-shrink-0">
+                <span className={`px-3 py-1 rounded-full font-extrabold text-[10px] flex items-center gap-1.5 border ${
+                  currentUser.status === 'approved' || (currentUser.status as string) === 'Active'
+                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800'
+                    : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border-amber-300 dark:border-amber-800'
+                }`}>
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>{currentUser.status === 'approved' || (currentUser.status as string) === 'Active' ? 'OFFICIALLY APPROVED' : 'REGISTERED APPLICANT'}</span>
+                </span>
+                <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                  ID: {currentUser.membershipId || (currentUser.applicationReference ? `REF-${currentUser.applicationReference}` : 'PENDING')}
                 </span>
               </div>
+            </div>
+
+            {/* Slip Title Ribbon */}
+            <div className="relative py-2 px-4 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-center">
+              <span className="font-display font-black text-xs sm:text-sm tracking-widest text-[#0A2E73] dark:text-sky-400 uppercase">
+                {currentUser.status === 'approved' || (currentUser.status as string) === 'Active'
+                  ? 'Official Membership Certificate & Approval Slip'
+                  : 'Official Membership Registration & Verification Slip'}
+              </span>
+            </div>
 
               {/* Member Profile Grid */}
               <div className="relative flex flex-col md:flex-row items-start gap-6">
@@ -613,15 +631,6 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
                 </div>
               </div>
             </div>
-          ) : (
-            <div className="p-8 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 rounded-2xl text-center space-y-3">
-              <AlertCircle className="w-10 h-10 text-amber-500 mx-auto" />
-              <h4 className="font-bold text-lg text-amber-900 dark:text-amber-200">Approval Slip Awaiting Super Admin Verification</h4>
-              <p className="text-xs text-amber-800 dark:text-amber-300 max-w-md mx-auto">
-                Your application is currently marked as {currentUser.status}. Official certified approval slips are generated only once membership has been ratified by the N-NEPEF National Secretariat.
-              </p>
-            </div>
-          )}
         </div>
       )}
 
@@ -714,46 +723,105 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
             </div>
           </div>
 
+          {/* Educational Background & Qualifications Card */}
+          {(() => {
+            const edu = parseEducationDetails(currentUser);
+            return (
+              <div className="bg-slate-50 dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+                  <div className="flex items-center gap-2">
+                    <GraduationCap className="w-4 h-4 text-[#2EA3F2]" />
+                    <h4 className="font-display font-bold text-sm text-slate-900 dark:text-white">Educational Background &amp; Qualifications</h4>
+                  </div>
+                  <span className="text-[10px] font-bold text-sky-600 dark:text-sky-400 bg-sky-50 dark:bg-sky-950 px-2.5 py-0.5 rounded-full border border-sky-200 dark:border-sky-800">
+                    Academic Records
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 text-xs">
+                  <div className="space-y-1">
+                    <span className="text-slate-500 text-[10px] uppercase font-mono block">Institution / School</span>
+                    <p className="font-bold text-slate-900 dark:text-white">{edu.institution || currentUser.company || 'Not Provided'}</p>
+                  </div>
+
+                  <div className="space-y-1">
+                    <span className="text-slate-500 text-[10px] uppercase font-mono block">Course of Study / Discipline</span>
+                    <p className="font-bold text-slate-900 dark:text-white">{edu.courseOfStudy || 'Not Provided'}</p>
+                  </div>
+
+                  <div className="space-y-1">
+                    <span className="text-slate-500 text-[10px] uppercase font-mono block">Highest Qualification</span>
+                    <p className="font-bold text-slate-900 dark:text-white">{edu.highestQualification || currentUser.qualification || 'Not Provided'}</p>
+                  </div>
+
+                  <div className="space-y-1">
+                    <span className="text-slate-500 text-[10px] uppercase font-mono block">Graduation Year</span>
+                    <p className="font-mono font-bold text-slate-900 dark:text-white">{edu.graduationYear || 'Not Provided'}</p>
+                  </div>
+
+                  {edu.professionalCertificates && (
+                    <div className="space-y-1 sm:col-span-2">
+                      <span className="text-slate-500 text-[10px] uppercase font-mono block">Professional Certifications</span>
+                      <p className="font-medium text-slate-900 dark:text-white">{edu.professionalCertificates}</p>
+                    </div>
+                  )}
+
+                  {edu.otherQualifications && (
+                    <div className="space-y-1 sm:col-span-2">
+                      <span className="text-slate-500 text-[10px] uppercase font-mono block">Other Qualifications / Accreditations</span>
+                      <p className="font-medium text-slate-900 dark:text-white">{edu.otherQualifications}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Next of Kin Card */}
-          <div className="bg-slate-50 dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
-              <div className="flex items-center gap-2">
-                <User className="w-4 h-4 text-[#2EA3F2]" />
-                <h4 className="font-display font-bold text-sm text-slate-900 dark:text-white">Next of Kin Information</h4>
+          {(() => {
+            const nok = parseNextOfKin(currentUser.nextOfKin);
+            return (
+              <div className="bg-slate-50 dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+                  <div className="flex items-center gap-2">
+                    <User className="w-4 h-4 text-[#2EA3F2]" />
+                    <h4 className="font-display font-bold text-sm text-slate-900 dark:text-white">Next of Kin Information</h4>
+                  </div>
+                  <span className="text-[10px] font-bold text-sky-600 dark:text-sky-400 bg-sky-50 dark:bg-sky-950 px-2.5 py-0.5 rounded-full border border-sky-200 dark:border-sky-800">
+                    Official Emergency Contact
+                  </span>
+                </div>
+
+                {nok.name || nok.phone ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 text-xs">
+                    <div className="space-y-1">
+                      <span className="text-slate-500 text-[10px] uppercase font-mono block">Next of Kin Name</span>
+                      <p className="font-bold text-slate-900 dark:text-white">{nok.name || 'Not Provided'}</p>
+                    </div>
+
+                    <div className="space-y-1">
+                      <span className="text-slate-500 text-[10px] uppercase font-mono block">Relation / Relationship</span>
+                      <p className="font-bold text-slate-900 dark:text-white">{nok.relation || 'Not Provided'}</p>
+                    </div>
+
+                    <div className="space-y-1">
+                      <span className="text-slate-500 text-[10px] uppercase font-mono block">Phone Number</span>
+                      <p className="font-mono font-bold text-slate-900 dark:text-white">{nok.phone || 'Not Provided'}</p>
+                    </div>
+
+                    <div className="space-y-1">
+                      <span className="text-slate-500 text-[10px] uppercase font-mono block">Residential Address</span>
+                      <p className="font-bold text-slate-900 dark:text-white">{nok.address || 'Not Provided'}</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-center py-4 text-xs text-slate-500 italic">
+                    No Next of Kin information recorded. Click "Request Data Correction from Super Admin" above to submit your Next of Kin details.
+                  </div>
+                )}
               </div>
-              <span className="text-[10px] font-bold text-sky-600 dark:text-sky-400 bg-sky-50 dark:bg-sky-950 px-2.5 py-0.5 rounded-full border border-sky-200 dark:border-sky-800">
-                Official Emergency Contact
-              </span>
-            </div>
-
-            {currentUser.nextOfKin ? (
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 text-xs">
-                <div className="space-y-1">
-                  <span className="text-slate-500 text-[10px] uppercase font-mono block">Next of Kin Name</span>
-                  <p className="font-bold text-slate-900 dark:text-white">{currentUser.nextOfKin.name || 'Not Provided'}</p>
-                </div>
-
-                <div className="space-y-1">
-                  <span className="text-slate-500 text-[10px] uppercase font-mono block">Relation / Relationship</span>
-                  <p className="font-bold text-slate-900 dark:text-white">{currentUser.nextOfKin.relation || 'Not Provided'}</p>
-                </div>
-
-                <div className="space-y-1">
-                  <span className="text-slate-500 text-[10px] uppercase font-mono block">Phone Number</span>
-                  <p className="font-mono font-bold text-slate-900 dark:text-white">{currentUser.nextOfKin.phone || 'Not Provided'}</p>
-                </div>
-
-                <div className="space-y-1">
-                  <span className="text-slate-500 text-[10px] uppercase font-mono block">Residential Address</span>
-                  <p className="font-bold text-slate-900 dark:text-white">{currentUser.nextOfKin.address || 'Not Provided'}</p>
-                </div>
-              </div>
-            ) : (
-              <div className="text-center py-4 text-xs text-slate-500 italic">
-                No Next of Kin information recorded. Click "Request Data Correction from Super Admin" above to submit your Next of Kin details.
-              </div>
-            )}
-          </div>
+            );
+          })()}
         </div>
       )}
 
