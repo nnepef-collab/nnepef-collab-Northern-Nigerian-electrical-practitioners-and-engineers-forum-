@@ -495,7 +495,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                 required
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
-                placeholder="e.g. ahmadhussainiali2020@gmail.com"
+                placeholder=""
+                autoComplete="off"
                 className="w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs text-slate-900 dark:text-white focus:ring-2 focus:ring-[#2EA3F2] outline-none"
               />
               <p className="text-[10px] text-slate-500 font-mono mt-1">

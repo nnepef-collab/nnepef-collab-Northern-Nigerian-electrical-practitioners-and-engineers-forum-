@@ -1,341 +1,514 @@
-import React, { useState } from 'react';
-import { Member } from '../types';
-import { Logo } from './Logo';
-import { ShieldCheck, Download, Printer, QrCode, Sparkles, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Member, ForumSettings } from '../types';
+import {
+  Download,
+  Printer,
+  FileDown,
+  CheckCircle2,
+  AlertCircle,
+  Loader2,
+  Sparkles,
+  User,
+  CreditCard,
+  Building2,
+  Calendar,
+  Zap,
+  Layers
+} from 'lucide-react';
+import QRCode from 'qrcode';
 import { handleImageError, getValidImageUrl, downloadFileSafely } from '../utils/imageHelpers';
-import { OFFICIAL_NNEPEF_LOGO } from '../constants/logo';
+import { OFFICIAL_NNEPEF_LOGO, OFFICIAL_ID_CARD_LOGO } from '../constants/logo';
+import { OFFICIAL_SECRETARY_SIGNATURE } from '../constants/signature';
+import {
+  downloadMemberIdCardPdf,
+  generateVerticalIdCardCanvas,
+  hasExecutiveColoredBottom,
+  formatCardExpiry,
+  formatFourDigitMembershipId
+} from '../services/pdfService';
 
-interface MembershipCardProps {
+export interface MembershipCardProps {
   member: Member;
   logoUrl?: string;
+  settings?: ForumSettings;
 }
 
-/**
- * Safely loads an image (including from Supabase Storage or data URI)
- * converting it to a blob or data URL so that drawing it on an HTML5 canvas
- * never causes a tainted canvas SecurityError.
- */
-async function loadSafeCanvasImage(url: string | undefined | null): Promise<HTMLImageElement | null> {
-  if (!url || typeof url !== 'string' || !url.trim() || url === 'undefined' || url === 'null') {
-    return null;
-  }
-  const cleanUrl = url.trim();
+export const MembershipCard: React.FC<MembershipCardProps> = ({ member, logoUrl, settings }) => {
+  const displayLogo = OFFICIAL_ID_CARD_LOGO;
+  const customSig = (settings as any)?.signatureUrl;
+  const displaySignature = customSig && typeof customSig === 'string' && customSig.trim() !== '' ? customSig : OFFICIAL_SECRETARY_SIGNATURE;
 
-  // If it is already a data URI or blob URL, load directly
-  if (cleanUrl.startsWith('data:') || cleanUrl.startsWith('blob:')) {
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => resolve(null);
-      img.src = cleanUrl;
-    });
-  }
-
-  // Attempt fetch as blob to avoid canvas crossOrigin security taint
-  try {
-    const response = await fetch(cleanUrl, { mode: 'cors', cache: 'no-cache' });
-    if (response.ok) {
-      const blob = await response.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      return new Promise((resolve) => {
-        const img = new Image();
-        img.onload = () => {
-          resolve(img);
-          setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
-        };
-        img.onerror = () => {
-          URL.revokeObjectURL(blobUrl);
-          resolve(null);
-        };
-        img.src = blobUrl;
-      });
-    }
-  } catch (fetchErr) {
-    console.warn('[MembershipCard] Direct blob fetch failed, falling back to crossOrigin Image:', fetchErr);
-  }
-
-  // Fallback to Image with crossOrigin = anonymous
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = () => resolve(null);
-    img.src = cleanUrl;
-  });
-}
-
-function drawAvatarFallback(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) {
-  ctx.save();
-  ctx.fillStyle = '#1E293B';
-  ctx.fillRect(x, y, w, h);
-  
-  // Head
-  ctx.fillStyle = '#94A3B8';
-  ctx.beginPath();
-  ctx.arc(x + w / 2, y + h * 0.38, w * 0.22, 0, Math.PI * 2);
-  ctx.fill();
-  
-  // Body
-  ctx.beginPath();
-  ctx.arc(x + w / 2, y + h * 0.95, w * 0.42, Math.PI, 0);
-  ctx.fill();
-  ctx.restore();
-}
-
-export const MembershipCard: React.FC<MembershipCardProps> = ({ member, logoUrl }) => {
-  const displayLogo = logoUrl && logoUrl.trim() !== '' && logoUrl !== '/logo.png' ? logoUrl : OFFICIAL_NNEPEF_LOGO;
-  const [downloadSuccess, setDownloadSuccess] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
+  // View Mode: 'both' shows Front and Back together ("ahadasu guri daya"), or 'front' / 'back'
+  const [viewMode, setViewMode] = useState<'both' | 'front' | 'back'>('both');
+  const [downloadSuccess, setDownloadSuccess] = useState<string | null>(null);
+  const [pdfSuccess, setPdfSuccess] = useState(false);
+  const [isGeneratingPng, setIsGeneratingPng] = useState<string | null>(null);
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string>('');
 
   const passportPhotoSrc = member.passportUrl || member.passportPhotoUrl || '';
-  const memberIdDisplay = member.membershipId || (member.applicationReference ? `REF-${member.applicationReference}` : 'PENDING APPROVAL');
+  const formattedId = formatFourDigitMembershipId(member.membershipId);
+  const memberIdDisplay = (formattedId || (member.applicationReference ? `REF-${member.applicationReference}` : 'PENDING APPROVAL')).toUpperCase();
+  const cleanPosition = (member.position || 'MEMBER').trim().toUpperCase();
+  const cleanName = (member.fullName || 'REGISTERED MEMBER').toUpperCase();
+  const cleanSpecialization = (member.specialization || (member as any).speciality || member.occupation || 'ELECTRICAL ENGINEERING').toUpperCase();
+  const formattedExpiry = formatCardExpiry(member.expiryDate);
+  const isExecutive = hasExecutiveColoredBottom(cleanPosition);
+  const isExactMember = cleanPosition === 'MEMBER';
+
+  // Generate crisp, verifiable QR code for back side
+  useEffect(() => {
+    const verifyUrl = `https://nepef.org.ng/verify?id=${encodeURIComponent(member.membershipId || member.id || '')}`;
+    QRCode.toDataURL(verifyUrl, {
+      width: 400,
+      margin: 1,
+      color: {
+        dark: '#002B66',
+        light: '#FFFFFF'
+      }
+    }).then(url => {
+      setQrCodeDataUrl(url);
+    }).catch(err => {
+      console.warn('QR code generation error:', err);
+    });
+  }, [member.membershipId, member.id]);
+
+  // 1. Download ID Card PDF (Portrait CR80 with both Front & Back)
+  const handleDownloadPdf = async (e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    setIsGeneratingPdf(true);
+    setErrorMessage(null);
+    try {
+      await downloadMemberIdCardPdf(member, settings);
+      setPdfSuccess(true);
+      setTimeout(() => setPdfSuccess(false), 4000);
+    } catch (err: any) {
+      console.error('[MembershipCard] PDF generation error:', err);
+      setErrorMessage(err?.message || 'Failed to download ID Card PDF. Please try again.');
+    } finally {
+      setIsGeneratingPdf(false);
+    }
+  };
+
+  // 2. Download ID Card PNG for a specific side ('front' | 'back')
+  const handleDownloadCardImage = async (side: 'front' | 'back', e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    setIsGeneratingPng(side);
+    setErrorMessage(null);
+    try {
+      const canvas = await generateVerticalIdCardCanvas(member, settings, side);
+      const dataUrl = canvas.toDataURL('image/png');
+      const filename = `NNEPEF-Vertical-IDCard-${(member.membershipId || member.fullName || 'Member').replace(/[^a-zA-Z0-9_-]/g, '_')}-${side}.png`;
+      await downloadFileSafely(dataUrl, filename, e);
+      setDownloadSuccess(side);
+      setTimeout(() => setDownloadSuccess(null), 4000);
+    } catch (err: any) {
+      console.error('[MembershipCard] ID card image generation error:', err);
+      setErrorMessage(err?.message || 'Failed to generate ID card image.');
+    } finally {
+      setIsGeneratingPng(null);
+    }
+  };
 
   const handlePrintCard = () => {
     try {
       window.print();
     } catch (e) {
-      console.warn('Direct print failed, opening card print view safely:', e);
+      console.warn('Direct print failed:', e);
     }
   };
 
-  const handleDownloadCardImage = async (e?: React.MouseEvent) => {
-    if (e) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
+  // FRONT CARD RENDER FUNCTION
+  const renderFrontCard = () => (
+    <div
+      id="nnepef-vertical-idcard-front"
+      className="w-[348px] sm:w-[364px] rounded-[38px] bg-[#0052CC] text-white p-3 sm:p-3.5 pt-4 sm:pt-4.5 relative overflow-hidden shadow-2xl flex flex-col justify-between select-none"
+      style={{ minHeight: '620px', maxHeight: '650px' }}
+    >
+      {/* TOP HEADER SECTION (on Blue Background) - Shifted slightly downward to create clean space at top */}
+      <div className="text-center pt-2 pb-1 relative z-10 px-1">
+        {/* Line 1: NORTHERN NIGERIAN ELECTRICAL — MUST BE STRONG YELLOW ONLY */}
+        <h3 className="font-extrabold text-[#FFDE00] text-[17.5px] sm:text-[19px] tracking-tight leading-tight uppercase drop-shadow-sm">
+          NORTHERN NIGERIAN ELECTRICAL
+        </h3>
+        {/* Line 2: PRACTITIONERS & ENGINEERS — White */}
+        <h3 className="font-extrabold text-white text-[17.5px] sm:text-[19px] tracking-tight leading-tight uppercase mt-0.5 drop-shadow-sm">
+          PRACTITIONERS &amp; ENGINEERS
+        </h3>
+        {/* Line 3: FORUM (N-NPEEF) — FORUM in white, (N-NPEEF) in pink/magenta */}
+        <h3 className="font-extrabold text-[17.5px] sm:text-[19px] tracking-tight leading-tight uppercase mt-0.5 drop-shadow-sm">
+          <span className="text-white">FORUM </span>
+          <span className="text-[#E11D48] font-black">(N-NPEEF)</span>
+        </h3>
 
-    setIsGenerating(true);
-    setErrorMessage(null);
+        {/* Title Ribbon: MEMBERSHIP I.D CARD (Rounded white title box and pink/magenta text style) */}
+        <div className="mt-2 mb-0.5 mx-auto px-6 py-1.5 rounded-full bg-white shadow-md text-[#E11D48] font-black text-[13.5px] sm:text-[15px] tracking-wider uppercase text-center w-fit border border-slate-100">
+          MEMBERSHIP I.D CARD
+        </div>
+      </div>
 
-    try {
-      // 1. Create high-resolution offline canvas for the card
-      const canvas = document.createElement('canvas');
-      canvas.width = 1080;
-      canvas.height = 675;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        throw new Error('Canvas 2D context not supported');
-      }
+      {/* INNER WHITE CENTRAL AREA WITH CYAN ROUNDED BORDER */}
+      <div className="bg-white rounded-[28px] border-4 border-[#00A3FF] p-3.5 sm:p-4 text-slate-900 shadow-xl relative my-1 z-10 flex-1 flex flex-col justify-between">
+        {/* Top Row inside White Area: Logo (Left) + Northern Symbol (Right) */}
+        <div className="flex items-center justify-between">
+          {/* Official master N-NEPEF ID card logo - LARGER and MORE PROMINENT */}
+          <div className="w-20 h-20 sm:w-22 sm:h-22 rounded-full overflow-hidden flex items-center justify-center flex-shrink-0 bg-white shadow-sm border border-slate-100">
+            <img
+              src={displayLogo}
+              alt="N-NEPEF Logo"
+              className="w-full h-full object-contain"
+              onError={(e) => {
+                const target = e.currentTarget;
+                if (target.src !== OFFICIAL_ID_CARD_LOGO) {
+                  target.src = OFFICIAL_ID_CARD_LOGO;
+                }
+              }}
+            />
+          </div>
 
-      // 2. Preload photo and logo safely
-      const [photoImg, logoImg] = await Promise.all([
-        passportPhotoSrc ? loadSafeCanvasImage(passportPhotoSrc) : Promise.resolve(null),
-        displayLogo ? loadSafeCanvasImage(displayLogo) : Promise.resolve(null)
-      ]);
+          {/* Northern Symbol / Electrical Atom */}
+          <div className="w-16 h-16 sm:w-18 sm:h-18 flex items-center justify-center text-[#00A3FF] flex-shrink-0">
+            <svg viewBox="0 0 100 100" className="w-14 h-14 sm:w-15 sm:h-15 stroke-[#00A3FF] fill-none" strokeWidth="6">
+              <ellipse cx="50" cy="50" rx="42" ry="18" transform="rotate(45 50 50)" />
+              <ellipse cx="50" cy="50" rx="42" ry="18" transform="rotate(-45 50 50)" />
+              <polygon points="48,34 58,48 50,48 52,66 42,52 50,52" fill="#00A3FF" stroke="none" />
+            </svg>
+          </div>
+        </div>
 
-      const drawCardGraphics = (includePhoto: boolean) => {
-        // Card Background Gradient
-        const grad = ctx.createLinearGradient(0, 0, 1080, 675);
-        grad.addColorStop(0, '#0A2E73');
-        grad.addColorStop(0.5, '#08245A');
-        grad.addColorStop(1, '#05193C');
-        ctx.fillStyle = grad;
-        if (ctx.roundRect) {
-          ctx.beginPath();
-          ctx.roundRect(0, 0, 1080, 675, 40);
-          ctx.fill();
-        } else {
-          ctx.fillRect(0, 0, 1080, 675);
-        }
+        {/* MEMBER PHOTOGRAPH IN A CIRCULAR FRAME - NATURAL FACE, PROPORTIONED */}
+        <div className="flex justify-center -mt-8">
+          <div className="w-34 h-34 sm:w-36 sm:h-36 rounded-full p-1 border-4 border-[#0052CC] bg-white shadow-lg">
+            <div className="w-full h-full rounded-full border-2 border-[#00A3FF] overflow-hidden bg-slate-100 flex items-center justify-center">
+              <img
+                src={getValidImageUrl(passportPhotoSrc, 'avatar')}
+                alt={member.fullName}
+                onError={(e) => handleImageError(e, 'avatar')}
+                className="w-full h-full object-cover"
+              />
+            </div>
+          </div>
+        </div>
 
-        // Border Accent
-        ctx.strokeStyle = '#2EA3F2';
-        ctx.lineWidth = 12;
-        if (ctx.roundRect) {
-          ctx.beginPath();
-          ctx.roundRect(0, 0, 1080, 675, 40);
-          ctx.stroke();
-        } else {
-          ctx.strokeRect(0, 0, 1080, 675);
-        }
+        {/* 4 DYNAMIC INFO ROWS ON FRONT (SPECIALITY IS ON BACK ONLY) */}
+        <div className="mt-3.5 space-y-3 sm:space-y-3.5 text-left">
+          {/* Row 1: Member Name — PINK/MAGENTA, NOTICEABLY LARGER, BOLD & PROMINENT */}
+          <div className="flex items-center gap-2.5">
+            <div className="w-8.5 h-8.5 rounded-lg bg-[#0052CC] text-white flex items-center justify-center flex-shrink-0 shadow-sm">
+              <User className="w-5 h-5" />
+            </div>
+            <div className="overflow-hidden">
+              <h4 className="font-extrabold text-[21px] sm:text-[23px] text-[#E11D48] uppercase truncate leading-tight tracking-tight">
+                {cleanName}
+              </h4>
+            </div>
+          </div>
 
-        // Draw Watermark / Logo if available
-        if (logoImg) {
-          try {
-            ctx.save();
-            ctx.globalAlpha = 0.12;
-            ctx.drawImage(logoImg, 800, 380, 240, 240);
-            ctx.restore();
+          {/* Row 2: Membership ID Number — DARK BLUE/NAVY, NOTICEABLY LARGER & BOLDER */}
+          <div className="flex items-center gap-2.5">
+            <div className="w-8.5 h-8.5 rounded-lg bg-[#0052CC] text-white flex items-center justify-center flex-shrink-0 shadow-sm">
+              <CreditCard className="w-5 h-5" />
+            </div>
+            <div className="min-w-0 flex-1 flex items-baseline flex-wrap gap-x-1.5">
+              <span className="font-serif font-black text-[15.5px] sm:text-[17px] text-[#002B66] uppercase tracking-wide whitespace-nowrap">
+                MEMBERSHIP ID:
+              </span>
+              <span className="font-sans font-black text-[18px] sm:text-[20px] text-[#002B66] tracking-wider whitespace-nowrap inline-block">
+                {memberIdDisplay}
+              </span>
+            </div>
+          </div>
 
-            // Header Small Logo
-            ctx.save();
-            ctx.drawImage(logoImg, 60, 48, 70, 70);
-            ctx.restore();
-          } catch (logoErr) {
-            console.warn('[MembershipCard] Error drawing logo on canvas:', logoErr);
-          }
-        }
+          {/* Row 3: Position — GREEN, NOTICEABLY LARGER & PROMINENT */}
+          <div className="flex items-center gap-2.5">
+            <div className="w-8.5 h-8.5 rounded-lg bg-[#0052CC] text-white flex items-center justify-center flex-shrink-0 shadow-sm">
+              <Building2 className="w-5 h-5" />
+            </div>
+            <div className="overflow-hidden">
+              <span className="font-serif font-black text-[15.5px] sm:text-[17px] text-[#002B66] uppercase tracking-wide">
+                POSITION: <strong className="font-serif font-black text-[17.5px] sm:text-[19.5px] text-[#15803D]">{cleanPosition}</strong>
+              </span>
+            </div>
+          </div>
 
-        // Header Text
-        const headerX = logoImg ? 145 : 60;
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = 'bold 32px Arial, sans-serif';
-        ctx.fillText('N-NEPEF 2020', headerX, 75);
+          {/* Row 4: Expiry — "EXPIRES: " in dark blue/navy, date in pink/magenta — LARGER & PROMINENT */}
+          <div className="flex items-center gap-2.5">
+            <div className="w-8.5 h-8.5 rounded-lg bg-[#0052CC] text-white flex items-center justify-center flex-shrink-0 shadow-sm">
+              <Calendar className="w-5 h-5" />
+            </div>
+            <div className="overflow-hidden">
+              <span className="font-serif font-black text-[15.5px] sm:text-[17px] text-[#002B66] uppercase tracking-wide">
+                EXPIRES: <strong className="font-sans font-black text-[17.5px] sm:text-[19.5px] text-[#E11D48]">{formattedExpiry}</strong>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
 
-        ctx.fillStyle = '#7DD3FC';
-        ctx.font = 'bold 15px Arial, sans-serif';
-        ctx.fillText('NORTHERN NIGERIAN ELECTRICAL PRACTITIONERS AND ENGINEERS FORUM', headerX, 100);
+      {/* POSITION-BASED BOTTOM SECTION */}
+      {isExecutive ? (
+        <div className="relative h-9 w-full overflow-hidden -mb-1">
+          <svg viewBox="0 0 380 40" preserveAspectRatio="none" className="w-full h-full">
+            <path
+              d="M 0,10 Q 190,32 380,10 L 380,40 L 0,40 Z"
+              fill="#E11D48"
+            />
+            <path
+              d="M 0,10 Q 190,32 380,10"
+              fill="none"
+              stroke="#00A3FF"
+              strokeWidth="3"
+            />
+          </svg>
+        </div>
+      ) : (
+        <div className="h-2.5 w-full bg-[#0052CC]" />
+      )}
+    </div>
+  );
 
-        ctx.fillStyle = '#FCD34D';
-        ctx.font = 'bold 14px Arial, sans-serif';
-        ctx.fillText('MEMBERSHIP ID CARD', headerX, 122);
+  // BACK CARD RENDER FUNCTION (Exact replica of user's uploaded photo with signature)
+  const renderBackCard = () => (
+    <div
+      id="nnepef-vertical-idcard-back"
+      className="w-[348px] sm:w-[364px] rounded-[38px] bg-[#0052CC] text-white p-3 sm:p-3.5 relative overflow-hidden shadow-2xl flex flex-col justify-between select-none"
+      style={{ minHeight: '610px', maxHeight: '640px' }}
+    >
+      {/* White Panel with Cyan Border */}
+      <div className="bg-white rounded-[28px] border-4 border-[#00A3FF] p-4 text-slate-900 shadow-xl relative z-10 flex-1 flex flex-col justify-between items-center text-center">
+        {/* Organization Header */}
+        <div className="w-full pt-0.5 pb-1.5">
+          <h4 className="font-extrabold text-[#002B66] text-[13px] sm:text-[14px] tracking-tight leading-tight uppercase">
+            NORTHERN NIGERIAN ELECTRICAL
+          </h4>
+          <h4 className="font-extrabold text-[#002B66] text-[13px] sm:text-[14px] tracking-tight leading-tight uppercase mt-0.5">
+            PRACTITIONERS &amp; ENGINEERS
+          </h4>
+          <h4 className="font-extrabold text-[#002B66] text-[13px] sm:text-[14px] tracking-tight leading-tight uppercase mt-0.5">
+            FORUM <span className="text-[#E11D48] font-black">(N-NPEEF)</span>
+          </h4>
 
-        // Official Member Badge
-        ctx.fillStyle = '#10B981';
-        ctx.fillRect(800, 45, 220, 50);
-        ctx.fillStyle = '#022C22';
-        ctx.font = 'bold 20px Arial, sans-serif';
-        ctx.fillText('OFFICIAL MEMBER', 820, 78);
+          {/* Head Office & Tel */}
+          <p className="text-[9px] sm:text-[9.5px] font-bold text-[#002B66] tracking-tight mt-1.5 leading-tight px-1">
+            <span className="text-[#0052CC] font-black">Head Office:</span> {settings?.headquarters || 'Beside Tashar Rigiyar Zaki, opp. Brilliant Academy, Kano'}
+          </p>
+          <p className="text-[9px] sm:text-[9.5px] font-bold text-[#002B66] tracking-tight mt-0.5 leading-tight">
+            <span className="text-[#0052CC] font-black">Tel:</span> 07036144377, 08133771460, 09067543760
+          </p>
+        </div>
 
-        // Divider
-        ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.moveTo(60, 138);
-        ctx.lineTo(1020, 138);
-        ctx.stroke();
+        {/* MEMBER SPECIALITY ON BACK SIDE OF ID CARD (Prominent and clearly visible) */}
+        <div className="w-full bg-blue-50/90 border-2 border-[#00A3FF] rounded-xl px-3 py-1.5 my-1 text-center shadow-sm">
+          <span className="text-[10px] sm:text-[10.5px] font-black text-[#0052CC] uppercase tracking-wider block">
+            AREA OF SPECIALITY / FIELD
+          </span>
+          <span className="font-serif font-black text-[13.5px] sm:text-[15px] text-[#002B66] uppercase tracking-wide block mt-0.5 leading-tight">
+            {cleanSpecialization}
+          </span>
+        </div>
 
-        // Photo Frame
-        const photoBoxX = 60;
-        const photoBoxY = 160;
-        const photoBoxW = 220;
-        const photoBoxH = 280;
+        {/* Large Centered QR Code */}
+        <div className="my-auto py-0.5">
+          <div className="p-1.5 bg-white rounded-2xl border border-slate-300 shadow-sm inline-block">
+            {qrCodeDataUrl ? (
+              <img
+                src={qrCodeDataUrl}
+                alt="Member Verification QR Code"
+                className="w-34 h-34 sm:w-38 sm:h-38 object-contain mx-auto"
+              />
+            ) : (
+              <div className="w-34 h-34 sm:w-38 sm:h-38 flex items-center justify-center text-slate-400">
+                <Loader2 className="w-8 h-8 animate-spin" />
+              </div>
+            )}
+          </div>
+        </div>
 
-        ctx.fillStyle = '#0F172A';
-        ctx.fillRect(photoBoxX, photoBoxY, photoBoxW, photoBoxH);
-        ctx.strokeStyle = '#FFFFFF';
-        ctx.lineWidth = 6;
-        ctx.strokeRect(photoBoxX, photoBoxY, photoBoxW, photoBoxH);
+        {/* MEMBERSHIP I.D CARD Pill Button with Cyan Border */}
+        <div className="w-full max-w-[270px] py-1.5 px-4 rounded-xl border-2 border-[#00A3FF] bg-white shadow-sm text-center my-1">
+          <span className="font-black text-[13px] sm:text-[14px] tracking-wider uppercase text-[#002B66]">
+            MEMBERSHIP I.D CARD
+          </span>
+        </div>
 
-        // Draw Passport Photo or Avatar
-        if (includePhoto && photoImg) {
-          try {
-            ctx.drawImage(photoImg, photoBoxX, photoBoxY, photoBoxW, photoBoxH);
-          } catch (drawPhotoErr) {
-            console.warn('[MembershipCard] Error drawing photo image, drawing fallback avatar:', drawPhotoErr);
-            drawAvatarFallback(ctx, photoBoxX, photoBoxY, photoBoxW, photoBoxH);
-          }
-        } else {
-          drawAvatarFallback(ctx, photoBoxX, photoBoxY, photoBoxW, photoBoxH);
-        }
+        {/* OFFICIAL SIGNATURE ON BACK SIDE ONLY (Exact Match to User Reference Photo) */}
+        <div className="w-full flex flex-col items-center justify-center mt-1 mb-0.5">
+          <div className="h-11 flex items-center justify-center">
+            <img
+              src={displaySignature}
+              alt="Authorized Signature"
+              className="max-h-10 max-w-[200px] object-contain"
+              onError={(e) => {
+                const target = e.currentTarget;
+                if (target.src !== OFFICIAL_SECRETARY_SIGNATURE) {
+                  target.src = OFFICIAL_SECRETARY_SIGNATURE;
+                }
+              }}
+            />
+          </div>
+          <span className="text-[10.5px] font-bold text-[#002B66] uppercase tracking-wide">
+            SECRETARY GENERAL
+          </span>
+        </div>
+      </div>
 
-        // Member Details
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = 'bold 38px Arial, sans-serif';
-        ctx.fillText(member.fullName || 'Registered Member', 320, 205);
-
-        // ID Tag Box
-        ctx.fillStyle = 'rgba(0,0,0,0.6)';
-        ctx.fillRect(320, 230, 460, 55);
-        ctx.strokeStyle = '#2EA3F2';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(320, 230, 460, 55);
-        ctx.fillStyle = '#2EA3F2';
-        ctx.font = 'bold 26px monospace';
-        ctx.fillText(memberIdDisplay, 335, 268);
-
-        // Position
-        ctx.fillStyle = '#FCD34D';
-        ctx.font = 'bold 24px Arial, sans-serif';
-        ctx.fillText(member.position || 'Practicing Member', 320, 325);
-
-        // Occupation & Specialization
-        ctx.fillStyle = '#E2E8F0';
-        ctx.font = '20px Arial, sans-serif';
-        const specLine = member.occupation
-          ? `${member.occupation} • ${member.specialization || 'Electrical Engineering'}`
-          : (member.specialization || 'Electrical Engineering Specialist');
-        ctx.fillText(specLine, 320, 365);
-
-        // State & LGA
-        ctx.fillStyle = '#BAE6FD';
-        ctx.font = 'bold 20px Arial, sans-serif';
-        const locationLine = `State: ${member.state || 'General'} State Chapter${member.lga ? ` • ${member.lga} LGA` : ''}`;
-        ctx.fillText(locationLine, 320, 405);
-
-        // Bottom Bar Divider
-        ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(60, 560);
-        ctx.lineTo(1020, 560);
-        ctx.stroke();
-
-        ctx.fillStyle = '#94A3B8';
-        ctx.font = '20px Arial, sans-serif';
-        ctx.fillText(`Issued: ${member.issueDate || '2021-01-01'}`, 60, 610);
-        ctx.fillText(`Expiry: ${member.expiryDate || '2026-01-01'}`, 750, 610);
-      };
-
-      // Draw first with photo
-      drawCardGraphics(true);
-
-      // Attempt clean export
-      let dataUrl: string;
-      try {
-        dataUrl = canvas.toDataURL('image/png');
-      } catch (taintErr) {
-        console.warn('[MembershipCard] Canvas tainted by cross-origin resource, redrawing clean fallback:', taintErr);
-        drawCardGraphics(false);
-        dataUrl = canvas.toDataURL('image/png');
-      }
-
-      const filename = `NNEPEF-IDCard-${(member.membershipId || member.fullName || 'Member').replace(/[^a-zA-Z0-9_-]/g, '_')}.png`;
-      await downloadFileSafely(dataUrl, filename, e);
-      
-      setDownloadSuccess(true);
-      setTimeout(() => setDownloadSuccess(false), 4000);
-    } catch (err: any) {
-      console.error('[MembershipCard] ID card image generation error:', err);
-      setErrorMessage(err?.message || 'Failed to generate ID card image. You can use the Print / PDF button instead.');
-    } finally {
-      setIsGenerating(false);
-    }
-  };
+      {/* POSITION-BASED BOTTOM SECTION (BACK SIDE) */}
+      {!isExactMember && isExecutive ? (
+        <div className="relative h-9 w-full overflow-hidden -mb-1">
+          <svg viewBox="0 0 380 40" preserveAspectRatio="none" className="w-full h-full">
+            <path
+              d="M 0,10 Q 190,32 380,10 L 380,40 L 0,40 Z"
+              fill="#E11D48"
+            />
+            <path
+              d="M 0,10 Q 190,32 380,10"
+              fill="none"
+              stroke="#00A3FF"
+              strokeWidth="3"
+            />
+          </svg>
+        </div>
+      ) : (
+        <div className="h-2.5 w-full bg-[#0052CC]" />
+      )}
+    </div>
+  );
 
   return (
     <div className="space-y-6">
-      
       {/* Action Toolbar */}
-      <div className="no-print flex flex-col sm:flex-row items-center justify-between bg-slate-100 dark:bg-slate-800 p-4 rounded-2xl border border-slate-200 dark:border-slate-700 gap-4">
+      <div className="no-print flex flex-col md:flex-row items-center justify-between bg-slate-100 dark:bg-slate-800/90 p-4 rounded-2xl border border-slate-200 dark:border-slate-700 gap-4">
         <div>
-          <h4 className="font-display font-bold text-sm text-slate-900 dark:text-white">Official Membership ID Card</h4>
-          <p className="text-xs text-slate-500 dark:text-slate-400">High-Security Smart Membership Card</p>
+          <div className="flex items-center gap-2">
+            <span className="p-1.5 rounded-lg bg-[#0052CC]/15 text-[#0052CC] dark:text-sky-400">
+              <Sparkles className="w-4 h-4" />
+            </span>
+            <h4 className="font-display font-bold text-sm text-slate-900 dark:text-white">
+              Official Membership ID Card (Vertical Standing Badge)
+            </h4>
+          </div>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+            Full Portrait Credential • Front &amp; Back Sides Available
+          </p>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* View Mode Toggle: Both Sides ("ahadasu guri daya"), Front Only, or Back Only */}
+          <div className="flex items-center bg-white dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold">
+            <button
+              type="button"
+              onClick={() => setViewMode('both')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all ${
+                viewMode === 'both'
+                  ? 'bg-[#0052CC] text-white shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+              title="Display Both Sides Together in One Place"
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>Both Sides</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('front')}
+              className={`px-3 py-1.5 rounded-lg transition-all ${
+                viewMode === 'front'
+                  ? 'bg-[#0052CC] text-white shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              Front
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('back')}
+              className={`px-3 py-1.5 rounded-lg transition-all ${
+                viewMode === 'back'
+                  ? 'bg-[#0052CC] text-white shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              Back
+            </button>
+          </div>
+
+          {/* Primary Action: Download ID Card PDF */}
           <button
             type="button"
-            disabled={isGenerating}
-            onClick={handleDownloadCardImage}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs transition-all shadow-md active:scale-95 cursor-pointer"
+            disabled={isGeneratingPdf}
+            onClick={handleDownloadPdf}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800 disabled:opacity-50 text-white font-bold text-xs transition-all shadow-md active:scale-95 cursor-pointer"
+            title="Download Vertical ID Card PDF (Front & Back Complete)"
           >
-            {isGenerating ? (
+            {isGeneratingPdf ? (
               <>
-                <Loader2 className="w-4 h-4 text-emerald-200 animate-spin" />
-                <span>Generating Card...</span>
+                <Loader2 className="w-4 h-4 text-sky-200 animate-spin" />
+                <span>Building PDF...</span>
               </>
-            ) : downloadSuccess ? (
+            ) : pdfSuccess ? (
               <>
                 <CheckCircle2 className="w-4 h-4 text-emerald-200" />
-                <span>Card Saved!</span>
+                <span>PDF Downloaded!</span>
               </>
             ) : (
               <>
-                <Download className="w-4 h-4 text-emerald-200" />
-                <span>Download ID Card (PNG)</span>
+                <FileDown className="w-4 h-4 text-sky-200" />
+                <span>Download PDF</span>
               </>
             )}
           </button>
 
+          {/* Download Front PNG */}
+          <button
+            type="button"
+            disabled={isGeneratingPng !== null}
+            onClick={(e) => handleDownloadCardImage('front', e)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs transition-all shadow-sm active:scale-95 cursor-pointer"
+            title="Download Front High-Resolution PNG"
+          >
+            {isGeneratingPng === 'front' ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : downloadSuccess === 'front' ? (
+              <CheckCircle2 className="w-3.5 h-3.5" />
+            ) : (
+              <Download className="w-3.5 h-3.5" />
+            )}
+            <span>Front PNG</span>
+          </button>
+
+          {/* Download Back PNG */}
+          <button
+            type="button"
+            disabled={isGeneratingPng !== null}
+            onClick={(e) => handleDownloadCardImage('back', e)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white font-bold text-xs transition-all shadow-sm active:scale-95 cursor-pointer"
+            title="Download Back High-Resolution PNG"
+          >
+            {isGeneratingPng === 'back' ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : downloadSuccess === 'back' ? (
+              <CheckCircle2 className="w-3.5 h-3.5" />
+            ) : (
+              <Download className="w-3.5 h-3.5" />
+            )}
+            <span>Back PNG</span>
+          </button>
+
+          {/* Print Button */}
           <button
             type="button"
             onClick={handlePrintCard}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#0A2E73] text-white font-bold text-xs hover:bg-sky-700 transition-all shadow-md active:scale-95 cursor-pointer"
+            className="p-2 rounded-xl bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-300 dark:hover:bg-slate-600 transition-all cursor-pointer"
+            title="Print ID Card"
           >
-            <Printer className="w-4 h-4 text-[#2EA3F2]" />
-            <span>Print / PDF</span>
+            <Printer className="w-4 h-4" />
           </button>
         </div>
       </div>
@@ -347,171 +520,36 @@ export const MembershipCard: React.FC<MembershipCardProps> = ({ member, logoUrl 
         </div>
       )}
 
-      {/* PRINTABLE CARD LAYOUT CONTAINER */}
-      <div className="flex flex-col lg:flex-row items-center justify-center gap-8">
-        
-        {/* CARD FRONT SIDE */}
-        <div className="w-[360px] h-[225px] rounded-2xl bg-gradient-to-br from-[#0A2E73] via-[#08245A] to-[#05193C] text-white p-4 relative overflow-hidden shadow-2xl border-2 border-[#2EA3F2] flex flex-col justify-between select-none">
-          {/* Hologram Background Watermark */}
-          <div className="absolute -right-8 -bottom-8 w-40 h-40 opacity-15 pointer-events-none">
-            <img 
-              src={displayLogo} 
-              alt="" 
-              className="w-full h-full object-contain" 
-              style={{
-                filter: 'none',
-                WebkitFilter: 'none',
-                mixBlendMode: 'normal',
-                forcedColorAdjust: 'none'
-              }}
-              onError={(e) => {
-                const target = e.currentTarget;
-                if (target.src !== OFFICIAL_NNEPEF_LOGO) {
-                  target.src = OFFICIAL_NNEPEF_LOGO;
-                }
-              }} 
-            />
-          </div>
-
-          {/* Header Bar */}
-          <div className="flex items-center justify-between border-b border-white/20 pb-2">
-            <div className="flex items-center gap-2">
-              <img 
-                src={displayLogo} 
-                alt="N-NEPEF" 
-                className="w-8 h-8 object-contain" 
-                style={{
-                  filter: 'none',
-                  WebkitFilter: 'none',
-                  mixBlendMode: 'normal',
-                  opacity: 1,
-                  forcedColorAdjust: 'none'
-                }}
-                onError={(e) => {
-                  const target = e.currentTarget;
-                  if (target.src !== OFFICIAL_NNEPEF_LOGO) {
-                    target.src = OFFICIAL_NNEPEF_LOGO;
-                  }
-                }} 
-              />
-              <div>
-                <h5 className="font-display font-extrabold text-[11px] leading-none text-white tracking-tight">N-NEPEF 2020</h5>
-                <span className="text-[6.5px] text-sky-300 uppercase tracking-tight font-bold block">NORTHERN NIGERIAN ELECTRICAL PRACTITIONERS &amp; ENGINEERS FORUM</span>
-                <span className="text-[6.5px] text-amber-300 uppercase tracking-widest font-bold block">MEMBERSHIP ID CARD</span>
+      {/* ID CARD DISPLAY: COMBINED IN ONE PLACE ("ahadasu guri daya") */}
+      <div className="flex justify-center p-2">
+        {viewMode === 'both' ? (
+          <div className="flex flex-col lg:flex-row items-center justify-center gap-8 py-2 w-full">
+            {/* FRONT SIDE */}
+            <div className="flex flex-col items-center">
+              <div className="mb-2 px-3.5 py-1 rounded-full bg-blue-100 dark:bg-blue-900/50 text-[#0052CC] dark:text-sky-300 text-xs font-black tracking-wider uppercase border border-blue-200 dark:border-blue-800">
+                Front Side • Gaban Katin
               </div>
-            </div>
-            <span className="px-2 py-0.5 rounded bg-emerald-500 text-slate-950 font-extrabold text-[8px] uppercase tracking-wider">
-              OFFICIAL MEMBER
-            </span>
-          </div>
-
-          {/* Card Body */}
-          <div className="flex items-center gap-3 my-1">
-            <img 
-              src={getValidImageUrl(passportPhotoSrc, 'avatar')} 
-              alt={member.fullName} 
-              onError={(e) => handleImageError(e, 'avatar')}
-              className="w-20 h-24 rounded-lg object-cover border-2 border-white/80 shadow-md flex-shrink-0 bg-slate-900"
-            />
-
-            <div className="space-y-0.5 overflow-hidden text-left">
-              <h4 className="font-display font-extrabold text-xs sm:text-sm text-white truncate leading-tight">
-                {member.fullName}
-              </h4>
-              <p className="font-mono font-extrabold text-[10px] text-[#2EA3F2] bg-slate-950/60 px-1.5 py-0.5 rounded border border-sky-500/30 inline-block">
-                {memberIdDisplay}
-              </p>
-              <p className="text-[10px] font-bold text-amber-300 truncate">
-                {member.position || 'Practicing Member'}
-              </p>
-              <p className="text-[9px] text-slate-200 truncate">
-                {member.occupation ? `${member.occupation} • ${member.specialization || 'Electrical Engineering'}` : (member.specialization || 'Electrical Engineering')}
-              </p>
-              <p className="text-[9px] text-sky-200 truncate">
-                State: <strong>{member.state || 'General'} State</strong> {member.lga ? `• ${member.lga} LGA` : ''}
-              </p>
-            </div>
-          </div>
-
-          {/* Card Footer Bar */}
-          <div className="flex items-center justify-between pt-1 border-t border-white/20 text-[8px] text-slate-300">
-            <div>
-              <span>Issued: <strong className="text-white">{member.issueDate || '2021-01-01'}</strong></span>
-            </div>
-            <div>
-              <span>Expiry: <strong className="text-white">{member.expiryDate || '2026-01-01'}</strong></span>
-            </div>
-          </div>
-        </div>
-
-        {/* CARD BACK SIDE */}
-        <div className="w-[360px] h-[225px] rounded-2xl bg-slate-900 text-white p-4 relative overflow-hidden shadow-2xl border-2 border-slate-700 flex flex-col justify-between select-none">
-          
-          {/* Magnetic Stripe Graphic */}
-          <div className="w-full h-8 bg-slate-950 rounded-md my-1 border-y border-slate-800 flex items-center justify-end px-3">
-            <span className="font-mono text-[9px] text-slate-500 tracking-widest">N-NEPEF SMART CHIP 2020</span>
-          </div>
-
-          {/* QR Code & Barcode Content */}
-          <div className="flex items-center justify-between gap-3 px-2">
-            
-            {/* SVG Simulated QR Code */}
-            <div className="bg-white p-1.5 rounded-lg flex-shrink-0 shadow">
-              <svg width="56" height="56" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect width="100" height="100" fill="white"/>
-                <rect x="10" y="10" width="25" height="25" fill="#0A2E73"/>
-                <rect x="15" y="15" width="15" height="15" fill="white"/>
-                <rect x="65" y="10" width="25" height="25" fill="#0A2E73"/>
-                <rect x="70" y="15" width="15" height="15" fill="white"/>
-                <rect x="10" y="65" width="25" height="25" fill="#0A2E73"/>
-                <rect x="15" y="70" width="15" height="15" fill="white"/>
-                <rect x="40" y="10" width="15" height="15" fill="#0A2E73"/>
-                <rect x="40" y="40" width="20" height="20" fill="#2EA3F2"/>
-                <rect x="65" y="65" width="15" height="15" fill="#0A2E73"/>
-                <rect x="80" y="80" width="10" height="10" fill="#0A2E73"/>
-              </svg>
+              {renderFrontCard()}
             </div>
 
-            <div className="space-y-1 text-left flex-1">
-              <p className="text-[9px] text-slate-300 leading-tight">
-                This card remains the property of Northern Nigerian Electrical Practitioners &amp; Engineers Forum. If found, please return to Head Office or call +234 906 343 5546 / +234 803 055 9938.
-              </p>
-              <div className="text-[8px] text-sky-400 font-mono font-bold">
-                VERIFY AT: nepef.org.ng/verify
+            {/* BACK SIDE */}
+            <div className="flex flex-col items-center">
+              <div className="mb-2 px-3.5 py-1 rounded-full bg-blue-100 dark:bg-blue-900/50 text-[#0052CC] dark:text-sky-300 text-xs font-black tracking-wider uppercase border border-blue-200 dark:border-blue-800">
+                Back Side • Bayan Katin
               </div>
-            </div>
-
-          </div>
-
-          {/* Barcode Graphic Bottom */}
-          <div className="bg-white p-1.5 rounded-lg text-slate-950 text-center space-y-0.5">
-            <div className="h-5 flex items-center justify-center space-x-1">
-              {/* Simulated barcode lines */}
-              <div className="w-1 h-full bg-slate-950"></div>
-              <div className="w-0.5 h-full bg-slate-950"></div>
-              <div className="w-2 h-full bg-slate-950"></div>
-              <div className="w-1 h-full bg-slate-950"></div>
-              <div className="w-0.5 h-full bg-slate-950"></div>
-              <div className="w-3 h-full bg-slate-950"></div>
-              <div className="w-1 h-full bg-slate-950"></div>
-              <div className="w-0.5 h-full bg-slate-950"></div>
-              <div className="w-2 h-full bg-slate-950"></div>
-              <div className="w-1 h-full bg-slate-950"></div>
-              <div className="w-0.5 h-full bg-slate-950"></div>
-              <div className="w-3 h-full bg-slate-950"></div>
-              <div className="w-1 h-full bg-slate-950"></div>
-              <div className="w-2 h-full bg-slate-950"></div>
-              <div className="w-1 h-full bg-slate-950"></div>
-            </div>
-            <div className="font-mono text-[9px] font-bold tracking-widest leading-none">
-              *{memberIdDisplay}*
+              {renderBackCard()}
             </div>
           </div>
-
-        </div>
-
+        ) : viewMode === 'front' ? (
+          <div className="flex flex-col items-center">
+            {renderFrontCard()}
+          </div>
+        ) : (
+          <div className="flex flex-col items-center">
+            {renderBackCard()}
+          </div>
+        )}
       </div>
-
     </div>
   );
 };

@@ -25,7 +25,7 @@ async function startServer() {
 
   app.use(express.static(path.join(process.cwd(), 'public')));
 
-  const CANONICAL_SUPABASE_URL = 'https://lairqvcbocecspsswshg.supabase.co';
+  const CANONICAL_SUPABASE_URL = 'https://twpauvrjmaqdzrwteksd.supabase.co';
   
   function resolveServerCredentials() {
     const rawUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || CANONICAL_SUPABASE_URL;
@@ -194,7 +194,7 @@ async function startServer() {
     if (member.registeredAt || member.registered_at) payload.registered_at = member.registeredAt || member.registered_at;
     if (member.expiryDate || member.expiry_date) payload.expiry_date = member.expiryDate || member.expiry_date;
     if (member.approvedBy || member.approved_by) payload.approved_by = member.approvedBy || member.approved_by;
-    if (member.approvedAt || member.approved_at) payload.approved_at = member.approvedAt || member.approved_at;
+    if (member.approvalDate || member.approval_date || member.approvedAt || member.approved_at) payload.approval_date = member.approvalDate || member.approval_date || member.approvedAt || member.approved_at;
     if (member.rejectionReason || member.rejection_reason) payload.rejection_reason = member.rejectionReason || member.rejection_reason;
 
     return payload;
@@ -503,12 +503,14 @@ async function startServer() {
               status: (row.status || 'pending').toLowerCase(),
               role: row.role || 'Member',
               position: row.position || 'Member',
-              issueDate: row.issue_date || undefined,
+              qualificationDetails: qualDetails,
+              qualification_details: row.qualification_details || null,
+              issueDate: row.approval_date || row.issue_date || undefined,
               expiryDate: row.expiry_date || undefined,
               notes: row.notes || undefined,
               approvalNotificationSent: Boolean(row.approval_notification_sent),
               approvalNotificationSentAt: row.approval_notification_sent_at || undefined,
-              approvedAt: row.approved_at || undefined,
+              approvedAt: row.approval_date || row.approved_at || undefined,
               approvedBy: row.approved_by || undefined,
               rejectedBy: row.rejected_by || undefined,
               rejectionReason: row.rejection_reason || undefined,
@@ -539,7 +541,18 @@ async function startServer() {
         return res.status(503).json({ exists: false, error: 'Supabase credentials not available' });
       }
 
-      const response = await fetch(`${SUPABASE_URL}/rest/v1/members?or=(id.eq.${encodeURIComponent(id)},membership_id.ilike.${encodeURIComponent(id)},application_reference.ilike.${encodeURIComponent(id)},email.ilike.${encodeURIComponent(id)})&select=id,status,membership_id,application_reference,registered_at&limit=1`, {
+      const cleanId = id.trim();
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(cleanId);
+      const orFilters = [
+        `membership_id.ilike.${encodeURIComponent(cleanId)}`,
+        `application_reference.ilike.${encodeURIComponent(cleanId)}`,
+        `email.ilike.${encodeURIComponent(cleanId)}`
+      ];
+      if (isUUID) {
+        orFilters.unshift(`id.eq.${encodeURIComponent(cleanId)}`);
+      }
+
+      const response = await fetch(`${SUPABASE_URL}/rest/v1/members?or=(${orFilters.join(',')})&select=id,status,membership_id,application_reference,registered_at&limit=1`, {
         headers: {
           'apikey': effectiveKey,
           'Authorization': `Bearer ${effectiveKey}`
@@ -588,7 +601,7 @@ async function startServer() {
       }
 
       const response = await fetch(
-        `${SUPABASE_URL}/rest/v1/members?membership_id=ilike.${encodeURIComponent(cleanId)}&select=id,membership_id,full_name,state,lga,occupation,specialization,membership_type,position,status,passport_url,expiry_date,approved_at,registered_at,phone&limit=1`,
+        `${SUPABASE_URL}/rest/v1/members?membership_id=ilike.${encodeURIComponent(cleanId)}&select=id,membership_id,full_name,state,lga,occupation,specialization,membership_type,position,status,passport_url,approval_date,expiry_date,registered_at,phone&limit=1`,
         {
           headers: {
             'apikey': effectiveKey,
@@ -603,11 +616,20 @@ async function startServer() {
           const row = data[0];
           const statusStr = (row.status || '').toLowerCase();
           if (statusStr === 'approved' || statusStr === 'active') {
-            const dbPhoneDigits = String(row.phone || '').replace(/\D/g, '');
-            const inputSuffix = digitsOnlyPhone.slice(-8);
-            const dbSuffix = dbPhoneDigits.slice(-8);
+            const dbPhoneRaw = String(row.phone || '');
+            const candidatePhones = dbPhoneRaw.split(/[\/;,]/).map(p => p.trim()).filter(Boolean);
+            if (candidatePhones.length === 0) candidatePhones.push(dbPhoneRaw);
 
-            if (inputSuffix && dbSuffix && inputSuffix === dbSuffix) {
+            const phoneMatched = candidatePhones.some(cand => {
+              const candDigits = cand.replace(/\D/g, '');
+              if (!candDigits || digitsOnlyPhone.length < 8) return false;
+              if (candDigits === digitsOnlyPhone) return true;
+              const inputSuffix = digitsOnlyPhone.slice(-8);
+              const candSuffix = candDigits.slice(-8);
+              return inputSuffix.length === 8 && candSuffix.length === 8 && inputSuffix === candSuffix;
+            });
+
+            if (phoneMatched) {
               return res.json({
                 verified: true,
                 member: {
@@ -615,17 +637,17 @@ async function startServer() {
                   membershipId: row.membership_id,
                   fullName: row.full_name,
                   state: row.state,
-                  lga: row.lga,
-                  occupation: row.occupation,
-                  specialization: row.specialization,
-                  membershipType: row.membership_type,
+                  lga: row.lga || '',
+                  occupation: row.occupation || 'Practitioner',
+                  specialization: row.specialization || '',
+                  membershipType: row.membership_type || 'Full Member',
                   position: row.position || 'Member',
                   status: 'Approved & Certified',
-                  passportUrl: row.passport_url || row.passport_photo_url || '',
-                  issueDate: row.issue_date,
-                  expiryDate: row.expiry_date,
-                  approvedAt: row.approved_at,
-                  registeredAt: row.registered_at
+                  passportUrl: row.passport_url || '',
+                  issueDate: row.approval_date || null,
+                  expiryDate: row.expiry_date || null,
+                  approvedAt: row.approval_date || null,
+                  registeredAt: row.registered_at || null
                 }
               });
             }

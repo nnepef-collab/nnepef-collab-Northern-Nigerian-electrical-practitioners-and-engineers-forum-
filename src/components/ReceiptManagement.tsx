@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { PaymentRecord, Member, ForumSettings, NotificationDeliveryLog, NotificationItem } from '../types';
 import { dispatchEventNotification } from '../utils/notificationDispatcher';
-import { deleteItemFromCollection } from '../services/sqliteService';
+import { deletePaymentFromSupabase } from '../services/supabaseService';
 import { DualImageUpload } from './DualImageUpload';
 import { NORTHERN_STATES } from '../data/initialData';
 import { handleImageError, getValidImageUrl, downloadFileSafely } from '../utils/imageHelpers';
@@ -202,7 +202,7 @@ export const ReceiptManagement: React.FC<ReceiptManagementProps> = ({
     const updated = payments.filter((p) => p.id !== targetId);
     onUpdatePayments(updated);
     try {
-      await deleteItemFromCollection('payments', targetId);
+      await deletePaymentFromSupabase(targetId);
     } catch (err) {
       console.error('Failed to delete payment from database:', err);
     }

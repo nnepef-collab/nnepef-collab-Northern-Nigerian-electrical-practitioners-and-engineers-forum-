@@ -6,9 +6,8 @@ import { MembershipCard } from './MembershipCard';
 import { PrintableReceiptModal } from './PrintableReceiptModal';
 import { OfficialApprovalSlipModal } from './OfficialApprovalSlipModal';
 import { hashPassword } from '../utils/passwordUtils';
-import { savePaymentToSQLite } from '../services/sqliteService';
 import { signOutUser } from '../services/supabaseAuthService';
-import { fetchApprovedMemberById, isSupabaseConfigured } from '../services/supabaseService';
+import { fetchApprovedMemberById, isSupabaseConfigured, savePaymentToSupabase } from '../services/supabaseService';
 import { handleImageError, getValidImageUrl, downloadFileSafely } from '../utils/imageHelpers';
 import { downloadApprovalSlipPdf } from '../services/pdfService';
 import { OFFICIAL_NNEPEF_LOGO } from '../constants/logo';
@@ -179,7 +178,7 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
       remarks: 'Self-submitted bank payment reference for admin confirmation'
     };
 
-    await savePaymentToSQLite(newPayment);
+    await savePaymentToSupabase(newPayment);
     setManualSuccessMsg(`Payment reference '${newPayment.reference}' submitted successfully! Admin will review and confirm.`);
     setManualRef('');
     setTimeout(() => setManualSuccessMsg(''), 6000);

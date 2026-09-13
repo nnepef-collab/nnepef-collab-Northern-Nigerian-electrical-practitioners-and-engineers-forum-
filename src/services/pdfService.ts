@@ -1,8 +1,10 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import QRCode from 'qrcode';
 import { Member, ForumSettings } from '../types';
-import { OFFICIAL_NNEPEF_LOGO } from '../constants/logo';
+import { OFFICIAL_NNEPEF_LOGO, OFFICIAL_ID_CARD_LOGO } from '../constants/logo';
 import { OFFICIAL_SECRETARY_SIGNATURE } from '../constants/signature';
+import { downloadFileSafely } from '../utils/imageHelpers';
 
 /**
  * Safely loads an image as base64 data URL for embedding into jsPDF
@@ -758,4 +760,781 @@ export async function downloadApprovalSlipPdf(member: Member, settings?: ForumSe
   const filename = `NNEPEF-ApprovalSlip-${(member.membershipId || member.fullName || 'Member').replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
   doc.save(filename);
 }
+
+/**
+ * Helper to safely draw rounded rectangles on canvas
+ */
+function drawCanvasRoundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  if (typeof ctx.roundRect === 'function') {
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, r);
+  } else {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+}
+
+/**
+ * Safe circular avatar fallback for canvas
+ */
+function drawCanvasCircularAvatar(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number) {
+  ctx.save();
+  ctx.fillStyle = '#0F172A';
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Head
+  ctx.fillStyle = '#94A3B8';
+  ctx.beginPath();
+  ctx.arc(cx, cy - r * 0.18, r * 0.38, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Body
+  ctx.beginPath();
+  ctx.arc(cx, cy + r * 0.85, r * 0.68, Math.PI, 0);
+  ctx.fill();
+  ctx.restore();
+}
+
+/**
+ * Loads an image from base64 or URL safely into an HTMLImageElement
+ */
+/**
+ * Determines whether a member position requires the executive Red/Magenta bottom swoop
+ * RULE 1: POSITION = MEMBER -> BLUE bottom ONLY
+ * RULE 2: POSITION != MEMBER (SECRETARY, CHAIRMAN, TREASURER, etc.) -> BLUE + RED/MAGENTA bottom
+ */
+export function hasExecutiveColoredBottom(position?: string | null): boolean {
+  if (!position) return false;
+  const p = position.trim().toUpperCase();
+  if (p === 'MEMBER' || p === 'ORDINARY MEMBER' || p === 'PRACTICING MEMBER' || p === 'GENERAL MEMBER') {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Calculates a member's expiry date as exactly 2 years after issued or approval date.
+ */
+export function calculateTwoYearExpiryDate(issueDateStr?: string | null): string {
+  const base = issueDateStr ? new Date(issueDateStr) : new Date();
+  const validBase = isNaN(base.getTime()) ? new Date() : base;
+  const exp = new Date(validBase);
+  exp.setFullYear(exp.getFullYear() + 2);
+  return exp.toISOString().split('T')[0];
+}
+
+/**
+ * Ensures the Membership ID number is cleanly formatted (e.g. NNEPEF/KN/001).
+ * If the trailing sequence has fewer than 3 digits (e.g. NNEPEF/KN/1), it pads to 3 digits (e.g. NNEPEF/KN/001).
+ * If it has 3 or 4 digits already (e.g. NNEPEF/KN/001 or NNEPEF/KN/0021), it preserves them cleanly.
+ */
+export function formatFourDigitMembershipId(idStr?: string | null): string {
+  if (!idStr || typeof idStr !== 'string') return '';
+  const trimmed = idStr.trim().toUpperCase();
+  if (!trimmed) return '';
+
+  // If ends with a delimiter (/ or -) followed by digits, e.g. "NNEPEF/KN/1" or "NNEPEF/KN/001"
+  const match = trimmed.match(/^(.*[\/\-])(\d+)$/);
+  if (match) {
+    const prefix = match[1];
+    const digits = match[2];
+    if (digits.length < 3) {
+      return `${prefix}${digits.padStart(3, '0')}`;
+    }
+    return trimmed;
+  }
+
+  // If purely numeric e.g. "1" or "42"
+  if (/^\d+$/.test(trimmed) && trimmed.length < 3) {
+    return trimmed.padStart(3, '0');
+  }
+
+  return trimmed;
+}
+
+/**
+ * Formats expiry date to standard card presentation (e.g. 11TH SEPTEMBER 2028).
+ * Automatically calculates exactly 2 years from member.issueDate if dateStr is missing or invalid.
+ */
+export function formatCardExpiry(dateStr?: string | null, issueDateStr?: string | null): string {
+  let clean = (dateStr && dateStr.trim()) || '';
+  if (!clean || clean === 'N/A') {
+    clean = calculateTwoYearExpiryDate(issueDateStr);
+  }
+
+  // Strip ISO time component e.g. "2028-09-10T00:00:00+00:00" -> "2028-09-10"
+  if (clean.includes('T')) {
+    clean = clean.split('T')[0];
+  }
+
+  const months = [
+    'JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE',
+    'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER'
+  ];
+
+  // If already formatted with month name e.g. "11TH SEPTEMBER 2028"
+  const upper = clean.toUpperCase();
+  if (months.some(m => upper.includes(m))) {
+    return upper;
+  }
+
+  const parts = clean.split(/[-/]/);
+  if (parts.length === 3) {
+    let year = parts[0];
+    let month = parseInt(parts[1], 10);
+    let day = parseInt(parts[2], 10);
+
+    if (year.length <= 2 && parts[2].length === 4) {
+      year = parts[2];
+      day = parseInt(parts[0], 10);
+    }
+
+    const getOrdinal = (n: number) => {
+      const s = ['TH', 'ST', 'ND', 'RD'];
+      const v = n % 100;
+      return n + (s[(v - 20) % 10] || s[v] || s[0]);
+    };
+
+    if (months[month - 1] && !isNaN(day) && !isNaN(month)) {
+      return `${getOrdinal(day)} ${months[month - 1]} ${year}`;
+    }
+  }
+
+  const parsed = new Date(clean);
+  if (!isNaN(parsed.getTime())) {
+    const day = parsed.getDate();
+    const month = parsed.getMonth();
+    const year = parsed.getFullYear();
+    const getOrdinal = (n: number) => {
+      const s = ['TH', 'ST', 'ND', 'RD'];
+      const v = n % 100;
+      return n + (s[(v - 20) % 10] || s[v] || s[0]);
+    };
+    return `${getOrdinal(day)} ${months[month]} ${year}`;
+  }
+
+  return clean.toUpperCase();
+}
+
+/**
+ * Loads an image from base64 or URL safely into an HTMLImageElement
+ */
+async function loadHtmlImage(url: string | null | undefined, fallbacks: string[] = []): Promise<HTMLImageElement | null> {
+  const base64 = await getBase64ImageFromUrl(url, fallbacks);
+  if (!base64) return null;
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = base64;
+  });
+}
+
+/**
+ * Draw 4 distinct badge icons for canvas info rows
+ */
+function drawBadgeUser(ctx: CanvasRenderingContext2D, x: number, y: number, size: number) {
+  ctx.fillStyle = '#00A3FF';
+  drawCanvasRoundRect(ctx, x, y, size, size, 10);
+  ctx.fill();
+
+  ctx.fillStyle = '#FFFFFF';
+  const cx = x + size / 2;
+  ctx.beginPath();
+  ctx.arc(cx, y + size * 0.35, size * 0.18, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx, y + size * 0.85, size * 0.32, Math.PI, 0);
+  ctx.fill();
+}
+
+function drawBadgeId(ctx: CanvasRenderingContext2D, x: number, y: number, size: number) {
+  ctx.fillStyle = '#002B66';
+  drawCanvasRoundRect(ctx, x, y, size, size, 10);
+  ctx.fill();
+
+  ctx.strokeStyle = '#FFFFFF';
+  ctx.lineWidth = 2.5;
+  const cw = size * 0.68;
+  const ch = size * 0.52;
+  const cx = x + (size - cw) / 2;
+  const cy = y + (size - ch) / 2;
+  drawCanvasRoundRect(ctx, cx, cy, cw, ch, 4);
+  ctx.stroke();
+
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(cx + 4, cy + 4, 8, 8);
+  ctx.fillRect(cx + 15, cy + 5, cw - 19, 2.5);
+  ctx.fillRect(cx + 15, cy + 10, cw - 19, 2.5);
+  ctx.fillRect(cx + 4, cy + 16, cw - 8, 2);
+}
+
+function drawBadgeBuilding(ctx: CanvasRenderingContext2D, x: number, y: number, size: number) {
+  ctx.fillStyle = '#D81B60';
+  drawCanvasRoundRect(ctx, x, y, size, size, 10);
+  ctx.fill();
+
+  ctx.fillStyle = '#FFFFFF';
+  const bx = x + size * 0.18;
+  const bw = size * 0.64;
+  ctx.beginPath();
+  ctx.moveTo(x + size / 2, y + size * 0.22);
+  ctx.lineTo(bx, y + size * 0.38);
+  ctx.lineTo(bx + bw, y + size * 0.38);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillRect(bx, y + size * 0.38, bw, 3);
+  const colW = 4;
+  const colH = size * 0.32;
+  const colY = y + size * 0.44;
+  ctx.fillRect(bx + 4, colY, colW, colH);
+  ctx.fillRect(x + size / 2 - colW / 2, colY, colW, colH);
+  ctx.fillRect(bx + bw - 4 - colW, colY, colW, colH);
+  ctx.fillRect(bx - 2, colY + colH, bw + 4, 4);
+}
+
+function drawBadgeCalendar(ctx: CanvasRenderingContext2D, x: number, y: number, size: number) {
+  ctx.fillStyle = '#00A3FF';
+  drawCanvasRoundRect(ctx, x, y, size, size, 10);
+  ctx.fill();
+
+  ctx.strokeStyle = '#FFFFFF';
+  ctx.lineWidth = 2.5;
+  const cw = size * 0.62;
+  const ch = size * 0.54;
+  const cx = x + (size - cw) / 2;
+  const cy = y + (size - ch) / 2 + 2;
+  drawCanvasRoundRect(ctx, cx, cy, cw, ch, 4);
+  ctx.stroke();
+
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(cx + 6, cy - 3, 3, 5);
+  ctx.fillRect(cx + cw - 9, cy - 3, 3, 5);
+  ctx.fillRect(cx, cy + 6, cw, 2);
+
+  for (let r = 0; r < 2; r++) {
+    for (let c = 0; c < 3; c++) {
+      ctx.fillRect(cx + 5 + c * 7, cy + 11 + r * 5, 2.5, 2.5);
+    }
+  }
+}
+
+function drawBadgeSpecialization(ctx: CanvasRenderingContext2D, x: number, y: number, size: number) {
+  ctx.fillStyle = '#00A3FF';
+  drawCanvasRoundRect(ctx, x, y, size, size, 10);
+  ctx.fill();
+
+  // Lightning bolt / zap icon in white
+  ctx.fillStyle = '#FFFFFF';
+  ctx.beginPath();
+  const cx = x + size / 2;
+  const cy = y + size / 2;
+  ctx.moveTo(cx - 1, cy - size * 0.32);
+  ctx.lineTo(cx + size * 0.22, cy - size * 0.05);
+  ctx.lineTo(cx + 2, cy - size * 0.05);
+  ctx.lineTo(cx + size * 0.12, cy + size * 0.32);
+  ctx.lineTo(cx - size * 0.22, cy + size * 0.05);
+  ctx.lineTo(cx - 2, cy + size * 0.05);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawElectricalEmblem(ctx: CanvasRenderingContext2D, cx: number, cy: number, radius: number) {
+  ctx.save();
+  ctx.strokeStyle = '#00A3FF';
+  ctx.lineWidth = 4;
+
+  for (const angle of [45, -45]) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate((angle * Math.PI) / 180);
+    ctx.beginPath();
+    ctx.ellipse(0, 0, radius * 0.85, radius * 0.35, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  ctx.fillStyle = '#00A3FF';
+  ctx.beginPath();
+  ctx.moveTo(cx - 2, cy - 14);
+  ctx.lineTo(cx + 8, cy - 2);
+  ctx.lineTo(cx + 1, cy - 2);
+  ctx.lineTo(cx + 4, cy + 14);
+  ctx.lineTo(cx - 8, cy + 2);
+  ctx.lineTo(cx - 1, cy + 2);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.restore();
+}
+
+/**
+ * Generates an ultra-high resolution HTML5 Canvas of the Official Vertical / Portrait Membership ID Card
+ * exactly following the reference image layout, typography, proportions, and position-based bottom color rule.
+ */
+export async function generateVerticalIdCardCanvas(
+  member: Member,
+  settings?: ForumSettings,
+  side: 'front' | 'back' = 'front'
+): Promise<HTMLCanvasElement> {
+  const canvas = document.createElement('canvas');
+  // High resolution portrait CR80 ratio (800 x 1268px - exact 54mm x 85.6mm ratio)
+  canvas.width = 800;
+  canvas.height = 1268;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Canvas 2D context not supported');
+  }
+
+  // Preload graphics safely via base64
+  const [logoImg, photoImg, sigImg] = await Promise.all([
+    loadHtmlImage(OFFICIAL_ID_CARD_LOGO, ['/nnepef-id-card-logo.jpg', '/nnepef-id-card-logo.png', settings?.logoUrl || OFFICIAL_NNEPEF_LOGO]),
+    loadHtmlImage(member.passportUrl || member.passportPhotoUrl),
+    loadHtmlImage((settings as any)?.signatureUrl || OFFICIAL_SECRETARY_SIGNATURE, [OFFICIAL_SECRETARY_SIGNATURE, '/secretary-signature.png'])
+  ]);
+
+  const cleanName = (member.fullName || 'REGISTERED MEMBER').toUpperCase();
+  const formattedId = formatFourDigitMembershipId(member.membershipId);
+  const cleanId = (formattedId || (member.applicationReference ? `REF-${member.applicationReference}` : 'PENDING')).toUpperCase();
+  const cleanPosition = (member.position || 'MEMBER').trim().toUpperCase();
+  const cleanSpecialization = (member.specialization || (member as any).speciality || member.occupation || 'ELECTRICAL ENGINEERING').toUpperCase();
+  const cleanExpiry = formatCardExpiry(member.expiryDate, member.issueDate);
+  const isExecutive = hasExecutiveColoredBottom(cleanPosition);
+  const isExactMember = cleanPosition === 'MEMBER';
+
+  if (side === 'front') {
+    // 1. Blue Outer Card Background
+    ctx.fillStyle = '#0052CC';
+    drawCanvasRoundRect(ctx, 0, 0, 800, 1268, 44);
+    ctx.fill();
+
+    // 2. Top Header on Blue Background (Shifted slightly downward to create clean space at top)
+    // Line 1: NORTHERN NIGERIAN ELECTRICAL — MUST BE STRONG YELLOW ONLY
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#FFDE00';
+    ctx.font = 'bold 36px Arial, sans-serif';
+    ctx.fillText('NORTHERN NIGERIAN ELECTRICAL', 400, 80);
+
+    // Line 2: PRACTITIONERS & ENGINEERS — White
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 36px Arial, sans-serif';
+    ctx.fillText('PRACTITIONERS & ENGINEERS', 400, 122);
+
+    // Line 3: FORUM (N-NPEEF) — FORUM in white, (N-NPEEF) in pink/magenta
+    const forumWord = 'FORUM ';
+    const acronymWord = '(N-NPEEF)';
+    ctx.font = 'bold 36px Arial, sans-serif';
+    const forumW = ctx.measureText(forumWord).width;
+    const acronymW = ctx.measureText(acronymWord).width;
+    const startL3X = 400 - (forumW + acronymW) / 2;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillText(forumWord, startL3X, 164);
+    ctx.fillStyle = '#E11D48';
+    ctx.fillText(acronymWord, startL3X + forumW, 164);
+
+    // 3. MEMBERSHIP I.D CARD Pill Ribbon (White pill badge with pink/magenta text style) - NO address on front
+    const pillW = 450;
+    const pillH = 48;
+    const pillX = 400 - pillW / 2;
+    const pillY = 200;
+
+    ctx.fillStyle = '#FFFFFF';
+    drawCanvasRoundRect(ctx, pillX, pillY, pillW, pillH, 24);
+    ctx.fill();
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#E11D48';
+    ctx.font = 'bold 25px Arial, sans-serif';
+    ctx.fillText('MEMBERSHIP I.D CARD', 400, pillY + 33);
+
+    // 4. Inner White Central Container with Cyan Rounded Border
+    const whiteX = 38;
+    const whiteY = 270;
+    const whiteW = 724;
+    const whiteH = 932;
+    const whiteR = 36;
+
+    // Fill white
+    ctx.fillStyle = '#FFFFFF';
+    drawCanvasRoundRect(ctx, whiteX, whiteY, whiteW, whiteH, whiteR);
+    ctx.fill();
+
+    // Cyan Border
+    ctx.strokeStyle = '#00A3FF';
+    ctx.lineWidth = 7;
+    drawCanvasRoundRect(ctx, whiteX, whiteY, whiteW, whiteH, whiteR);
+    ctx.stroke();
+
+    // 5. Inside White Container
+    // Top-Left: New Official Master ID Card Logo (LARGER and MORE PROMINENT)
+    if (logoImg) {
+      try {
+        ctx.save();
+        ctx.drawImage(logoImg, 56, 284, 150, 150);
+        ctx.restore();
+      } catch (e) {
+        console.warn('Canvas logo error:', e);
+      }
+    }
+
+    // Top-Right: Cyan / Blue Electrical Atom Northern Symbol
+    drawElectricalEmblem(ctx, 688, 359, 56);
+
+    // Center: Member Photograph in Prominent Circular Frame (Natural face, perfectly proportioned)
+    const photoCx = 400;
+    const photoCy = 449;
+    const photoR = 145;
+
+    // Outer Deep Blue Ring
+    ctx.strokeStyle = '#0052CC';
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.arc(photoCx, photoCy, photoR + 10, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Inner Cyan Ring
+    ctx.strokeStyle = '#00A3FF';
+    ctx.lineWidth = 3.5;
+    ctx.beginPath();
+    ctx.arc(photoCx, photoCy, photoR + 3, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Clip & Draw Photo inside Circle - Aspect-ratio preserving (NEVER squeezed or distorted)
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(photoCx, photoCy, photoR, 0, Math.PI * 2);
+    ctx.clip();
+
+    if (photoImg) {
+      try {
+        const imgW = (photoImg as any).naturalWidth || photoImg.width || 1;
+        const imgH = (photoImg as any).naturalHeight || photoImg.height || 1;
+        let sx = 0, sy = 0, sSize = Math.min(imgW, imgH);
+        if (imgW > imgH) {
+          sx = (imgW - imgH) / 2;
+        } else if (imgH > imgW) {
+          sy = (imgH - imgW) / 2;
+        }
+        ctx.drawImage(photoImg, sx, sy, sSize, sSize, photoCx - photoR, photoCy - photoR, photoR * 2, photoR * 2);
+      } catch (err) {
+        console.warn('Canvas photo draw error:', err);
+        drawCanvasCircularAvatar(ctx, photoCx, photoCy, photoR);
+      }
+    } else {
+      drawCanvasCircularAvatar(ctx, photoCx, photoCy, photoR);
+    }
+    ctx.restore();
+
+    // 6. Member Info Rows (4 Rows on Front: Name, ID, Position, Expiry — SPECIALITY IS ON BACK ONLY)
+    // Row 1: Member Name — PINK/MAGENTA, NOTICEABLY LARGER, BOLD and highly prominent
+    const row1BadgeY = 644;
+    const row1TextY = 689;
+    drawBadgeUser(ctx, 66, row1BadgeY, 58);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#E11D48';
+    let nameFontSize = 44;
+    ctx.font = `bold ${nameFontSize}px Arial, sans-serif`;
+    while (140 + ctx.measureText(cleanName).width > 735 && nameFontSize > 28) {
+      nameFontSize -= 1;
+      ctx.font = `bold ${nameFontSize}px Arial, sans-serif`;
+    }
+    ctx.fillText(cleanName, 140, row1TextY);
+
+    // Row 2: Membership ID Number — DARK BLUE/NAVY, NOTICEABLY LARGER & BOLDER
+    const row2BadgeY = 764;
+    const row2TextY = 807;
+    drawBadgeId(ctx, 66, row2BadgeY, 58);
+    ctx.font = 'bold 33px Georgia, serif';
+    ctx.fillStyle = '#002B66';
+    const idPrefix = 'MEMBERSHIP ID: ';
+    ctx.fillText(idPrefix, 140, row2TextY);
+    const idLabelW = ctx.measureText(idPrefix).width;
+
+    let idFontSize = 36;
+    ctx.font = `bold ${idFontSize}px Arial, sans-serif`;
+    while (140 + idLabelW + ctx.measureText(cleanId).width > 735 && idFontSize > 22) {
+      idFontSize -= 1;
+      ctx.font = `bold ${idFontSize}px Arial, sans-serif`;
+    }
+    ctx.fillStyle = '#002B66';
+    ctx.fillText(cleanId, 140 + idLabelW, row2TextY);
+
+    // Row 3: POSITION — GREEN, NOTICEABLY LARGER & PROMINENT
+    const row3BadgeY = 884;
+    const row3TextY = 927;
+    drawBadgeBuilding(ctx, 66, row3BadgeY, 58);
+    ctx.font = 'bold 33px Georgia, serif';
+    ctx.fillStyle = '#002B66';
+    ctx.fillText('POSITION: ', 140, row3TextY);
+    const posLabelW = ctx.measureText('POSITION: ').width;
+    ctx.font = 'bold 36px Georgia, serif';
+    ctx.fillStyle = '#15803D';
+    ctx.fillText(cleanPosition, 140 + posLabelW, row3TextY);
+
+    // Row 4: Expiry — "EXPIRES: " in navy, date in pink/magenta — LARGER & HIGHLY READABLE
+    const row4BadgeY = 1004;
+    const row4TextY = 1047;
+    drawBadgeCalendar(ctx, 66, row4BadgeY, 58);
+    ctx.font = 'bold 33px Georgia, serif';
+    ctx.fillStyle = '#002B66';
+    ctx.fillText('EXPIRES: ', 140, row4TextY);
+    const expLabelW = ctx.measureText('EXPIRES: ').width;
+    ctx.font = 'bold 36px Arial, sans-serif';
+    ctx.fillStyle = '#E11D48';
+    ctx.fillText(cleanExpiry, 140 + expLabelW, row4TextY);
+
+    // 7. POSITION-BASED BOTTOM SECTION
+    // RULE 1: If POSITION === 'MEMBER' -> Bottom is BLUE ONLY
+    // RULE 2: If POSITION !== 'MEMBER' (Executive) -> Preserved subtle executive curved accent
+    if (isExecutive) {
+      ctx.save();
+      drawCanvasRoundRect(ctx, 0, 0, 800, 1268, 44);
+      ctx.clip();
+
+      ctx.fillStyle = '#E11D48';
+      ctx.beginPath();
+      ctx.moveTo(0, 1268);
+      ctx.lineTo(0, 1205);
+      ctx.bezierCurveTo(240, 1246, 560, 1246, 800, 1205);
+      ctx.lineTo(800, 1268);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.strokeStyle = '#00A3FF';
+      ctx.lineWidth = 4.5;
+      ctx.beginPath();
+      ctx.moveTo(0, 1205);
+      ctx.bezierCurveTo(240, 1246, 560, 1246, 800, 1205);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+  } else {
+    // =========================================================================
+    // BACK SIDE OF VERTICAL CARD (Strong Blue Identity, Official Kano Office & Tel)
+    // =========================================================================
+    // 1. Outer Blue Background
+    ctx.fillStyle = '#0052CC';
+    drawCanvasRoundRect(ctx, 0, 0, 800, 1268, 44);
+    ctx.fill();
+
+    // 2. White Container with Cyan Border
+    const whiteX = 38;
+    const whiteY = 38;
+    const whiteW = 724;
+    const whiteH = 1192;
+    const whiteR = 40;
+
+    ctx.fillStyle = '#FFFFFF';
+    drawCanvasRoundRect(ctx, whiteX, whiteY, whiteW, whiteH, whiteR);
+    ctx.fill();
+
+    ctx.strokeStyle = '#00A3FF';
+    ctx.lineWidth = 8;
+    drawCanvasRoundRect(ctx, whiteX, whiteY, whiteW, whiteH, whiteR);
+    ctx.stroke();
+
+    // 3. Organization Header on White Container
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#002B66';
+    ctx.font = 'bold 28px Arial, sans-serif';
+    ctx.fillText('NORTHERN NIGERIAN ELECTRICAL', 400, 115);
+
+    ctx.font = 'bold 28px Arial, sans-serif';
+    ctx.fillText('PRACTITIONERS & ENGINEERS', 400, 152);
+
+    ctx.font = 'bold 28px Arial, sans-serif';
+    const bForumTxt = 'FORUM ';
+    const bAcronymTxt = '(N-NPEEF)';
+    const bForumW = ctx.measureText(bForumTxt).width;
+    const bAcronymW = ctx.measureText(bAcronymTxt).width;
+    const bTotalL3W = bForumW + bAcronymW;
+    const bStartL3X = 400 - bTotalL3W / 2;
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#002B66';
+    ctx.fillText(bForumTxt, bStartL3X, 190);
+    ctx.fillStyle = '#E11D48';
+    ctx.fillText(bAcronymTxt, bStartL3X + bForumW, 190);
+
+    // Head Office Line: In official Deep Blue
+    ctx.font = 'bold 15px Arial, sans-serif';
+    const bHeadPrefix = 'Head Office: ';
+    const bHeadBody = settings?.headquarters || 'Beside Tashar Rigiyar Zaki, opp. Brilliant Academy, Kano';
+    const bHeadPreW = ctx.measureText(bHeadPrefix).width;
+    const bHeadBodyW = ctx.measureText(bHeadBody).width;
+    const bHeadTotalW = bHeadPreW + bHeadBodyW;
+    const bHeadStartX = 400 - bHeadTotalW / 2;
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#0052CC';
+    ctx.fillText(bHeadPrefix, bHeadStartX, 230);
+    ctx.fillStyle = '#002B66';
+    ctx.fillText(bHeadBody, bHeadStartX + bHeadPreW, 230);
+
+    // Tel Line: EXACTLY THREE phone numbers: 07036144377, 08133771460, 09067543760
+    const bTelPrefix = 'Tel: ';
+    const bTelBody = '07036144377, 08133771460, 09067543760';
+    const bTelPreW = ctx.measureText(bTelPrefix).width;
+    const bTelBodyW = ctx.measureText(bTelBody).width;
+    const bTelTotalW = bTelPreW + bTelBodyW;
+    const bTelStartX = 400 - bTelTotalW / 2;
+
+    ctx.fillStyle = '#0052CC';
+    ctx.fillText(bTelPrefix, bTelStartX, 258);
+    ctx.fillStyle = '#002B66';
+    ctx.fillText(bTelBody, bTelStartX + bTelPreW, 258);
+
+    // 4. AREA OF SPECIALITY / FIELD (MOVED TO BACK OF ID CARD - PROMINENT & PROFESSIONAL)
+    const specBoxX = 70;
+    const specBoxY = 286;
+    const specBoxW = 660;
+    const specBoxH = 78;
+    ctx.fillStyle = '#F0F9FF';
+    drawCanvasRoundRect(ctx, specBoxX, specBoxY, specBoxW, specBoxH, 16);
+    ctx.fill();
+
+    ctx.strokeStyle = '#00A3FF';
+    ctx.lineWidth = 2.5;
+    drawCanvasRoundRect(ctx, specBoxX, specBoxY, specBoxW, specBoxH, 16);
+    ctx.stroke();
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#0052CC';
+    ctx.font = 'bold 15px Arial, sans-serif';
+    ctx.fillText('AREA OF SPECIALITY / FIELD', 400, specBoxY + 28);
+
+    ctx.fillStyle = '#002B66';
+    let specFontSize = 25;
+    ctx.font = `bold ${specFontSize}px Georgia, serif`;
+    while (ctx.measureText(cleanSpecialization).width > 620 && specFontSize > 16) {
+      specFontSize -= 1;
+      ctx.font = `bold ${specFontSize}px Georgia, serif`;
+    }
+    ctx.fillText(cleanSpecialization, 400, specBoxY + 60);
+
+    // 5. Large Centered QR Code
+    const verifyUrl = `https://nepef.org.ng/verify?id=${encodeURIComponent(cleanId)}`;
+    try {
+      const qrDataUrl = await QRCode.toDataURL(verifyUrl, {
+        width: 380,
+        margin: 1,
+        color: {
+          dark: '#002B66',
+          light: '#FFFFFF'
+        }
+      });
+      const qrImg = await loadHtmlImage(qrDataUrl);
+      if (qrImg) {
+        ctx.strokeStyle = '#BAE6FD';
+        ctx.lineWidth = 1.5;
+        drawCanvasRoundRect(ctx, 205, 385, 390, 390, 16);
+        ctx.stroke();
+
+        ctx.drawImage(qrImg, 210, 390, 380, 380);
+      }
+    } catch (e) {
+      console.warn('QR code generation error:', e);
+    }
+
+    // 6. MEMBERSHIP I.D CARD Pill Button with Cyan Border in Blue
+    const bPillW = 440;
+    const bPillH = 58;
+    const bPillX = 400 - bPillW / 2;
+    const bPillY = 800;
+
+    ctx.fillStyle = '#FFFFFF';
+    drawCanvasRoundRect(ctx, bPillX, bPillY, bPillW, bPillH, 18);
+    ctx.fill();
+
+    ctx.strokeStyle = '#00A3FF';
+    ctx.lineWidth = 4.5;
+    drawCanvasRoundRect(ctx, bPillX, bPillY, bPillW, bPillH, 18);
+    ctx.stroke();
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#002B66';
+    ctx.font = 'bold 27px "Arial Black", Arial, sans-serif';
+    ctx.fillText('MEMBERSHIP I.D CARD', 400, bPillY + 39);
+
+    // 7. Authorized Signature on Back Side ONLY (Exact Match to User Reference Photo)
+    if (sigImg) {
+      try {
+        ctx.drawImage(sigImg, 260, 875, 280, 150);
+      } catch (e) {
+        console.warn('Back canvas signature draw error:', e);
+      }
+    }
+
+    // Signature title line
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#002B66';
+    ctx.font = 'bold 18px Arial, sans-serif';
+    ctx.fillText('SECRETARY GENERAL', 400, 1045);
+
+    ctx.fillStyle = '#64748B';
+    ctx.font = 'normal 15px Arial, sans-serif';
+    ctx.fillText('This card remains the property of N-NEPEF 2020.', 400, 1074);
+    ctx.fillText('If found, please return to the Head Office address above.', 400, 1096);
+
+  }
+
+  return canvas;
+}
+
+/**
+ * Downloads the Official High-Quality Vertical / Portrait Membership ID Card as a PDF
+ * (Strictly Portrait CR80 format, centered, high-resolution, compatible with Android/mobile & desktop)
+ */
+export async function downloadMemberIdCardPdf(member: Member, settings?: ForumSettings): Promise<void> {
+  // 1. Generate Front and Back High-Resolution Canvas Images
+  const frontCanvas = await generateVerticalIdCardCanvas(member, settings, 'front');
+  const backCanvas = await generateVerticalIdCardCanvas(member, settings, 'back');
+
+  const frontDataUrl = frontCanvas.toDataURL('image/png');
+  const backDataUrl = backCanvas.toDataURL('image/png');
+
+  // Standard CR80 ISO/IEC 7810 vertical card size in mm (54mm x 85.6mm)
+  const cardWidthMm = 54;
+  const cardHeightMm = 85.6;
+
+  // 2. Initialize jsPDF in strictly Portrait orientation
+  const doc = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: [cardWidthMm, cardHeightMm]
+  });
+
+  // Page 1: Front of the vertical card
+  doc.addImage(frontDataUrl, 'PNG', 0, 0, cardWidthMm, cardHeightMm, undefined, 'FAST');
+
+  // Page 2: Back of the vertical card
+  doc.addPage([cardWidthMm, cardHeightMm], 'portrait');
+  doc.addImage(backDataUrl, 'PNG', 0, 0, cardWidthMm, cardHeightMm, undefined, 'FAST');
+
+  // 3. Save via blob and downloadFileSafely for 100% Android / Mobile / Desktop reliability
+  const cleanId = (member.membershipId || member.fullName || 'Member').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const filename = `NNEPEF-Vertical-IDCard-${cleanId}.pdf`;
+
+  const pdfBlob = doc.output('blob');
+  const blobUrl = URL.createObjectURL(pdfBlob);
+  await downloadFileSafely(blobUrl, filename);
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
+}
+
+
 

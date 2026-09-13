@@ -5,7 +5,7 @@
  * Supabase PostgreSQL (`public.members`) is the SOLE AUTHORITATIVE SOURCE OF TRUTH
  * for all member records.
  * 
- * Local storage, IndexedDB, SQLite, and in-memory caches are STRICTLY FORBIDDEN
+ * Local storage, IndexedDB, and in-memory caches are STRICTLY FORBIDDEN
  * from storing, caching, or providing fallback data for member records.
  */
 

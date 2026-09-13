@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Camera, Image as ImageIcon, Upload, X, Eye, RefreshCw, AlertCircle, CheckCircle2, Video } from 'lucide-react';
-import { uploadFileToSQLiteStorage } from '../services/sqliteService';
+import { uploadFileToSupabaseStorage } from '../services/supabaseService';
 import { handleImageError, getValidImageUrl } from '../utils/imageHelpers';
 
 interface DualImageUploadProps {
@@ -125,7 +125,7 @@ export const DualImageUpload: React.FC<DualImageUploadProps> = ({
 
     if (bucket) {
       try {
-        const uploadedUrl = await uploadFileToSQLiteStorage(bucket, file, file.name);
+        const uploadedUrl = await uploadFileToSupabaseStorage(bucket, file, file.name);
         if (uploadedUrl) {
           setPreviewUrl(uploadedUrl);
           onImageChange(uploadedUrl);
@@ -208,7 +208,7 @@ export const DualImageUpload: React.FC<DualImageUploadProps> = ({
           canvas.toBlob(async (blob) => {
             if (blob) {
               try {
-                const uploadedUrl = await uploadFileToSQLiteStorage(bucket, blob, `capture-${Date.now()}.jpg`);
+                const uploadedUrl = await uploadFileToSupabaseStorage(bucket, blob, `capture-${Date.now()}.jpg`);
                 if (uploadedUrl) {
                   setPreviewUrl(uploadedUrl);
                   onImageChange(uploadedUrl);

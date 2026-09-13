@@ -1,0 +1,14 @@
+{
+  "projects": {
+    "default": "nnepef2020"
+  },
+  "targets": {
+    "nnepef2020": {
+      "hosting": {
+        "nnepef2020": [
+          "nnepef2020"
+        ]
+      }
+    }
+  }
+}

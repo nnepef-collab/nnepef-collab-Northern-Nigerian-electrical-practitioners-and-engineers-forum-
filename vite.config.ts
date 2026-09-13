@@ -6,8 +6,10 @@ import path from 'path';
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
 
-  // 1. Safe resolution of Supabase Project URL
-  const supabaseUrl = (process.env.VITE_SUPABASE_URL || env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || env.SUPABASE_URL || 'https://twpauvrjmaqdzrwteksd.supabase.co').trim().replace(/\/rest\/v1\/?$/, '').replace(/\/+$/, '');
+  // 1. Safe resolution of Canonical Supabase Project URL
+  const CANONICAL_SUPABASE_URL = 'https://twpauvrjmaqdzrwteksd.supabase.co';
+  const rawUrl = (process.env.VITE_SUPABASE_URL || env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || env.SUPABASE_URL || CANONICAL_SUPABASE_URL).trim().replace(/\/rest\/v1\/?$/, '').replace(/\/+$/, '');
+  const supabaseUrl = rawUrl.includes('twpauvrjmaqdzrwteksd') ? rawUrl : CANONICAL_SUPABASE_URL;
 
   // 2. Safe resolution of PUBLIC / PUBLISHABLE key ONLY (NEVER secrets or service_role)
   const rawKey = (process.env.VITE_SUPABASE_PUBLISHABLE_KEY || env.VITE_SUPABASE_PUBLISHABLE_KEY || '').trim();

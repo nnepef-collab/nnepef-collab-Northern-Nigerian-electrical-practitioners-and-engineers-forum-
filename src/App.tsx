@@ -57,7 +57,6 @@ import {
   fetchNotificationDeliveryLogsFromSupabase,
   saveNotificationDeliveryLogToSupabase,
   saveAuditLogToSupabase,
-  saveAndVerifyReceiptInSQLite,
   subscribeToPayments,
   subscribeToNotificationLogs,
   subscribeToNotifications,
@@ -174,12 +173,72 @@ export default function App() {
     }
   });
 
-  const [currentView, setCurrentView] = useState<string>(() => {
+  // Helper to resolve view from pathname or hash for seamless SPA routing and refreshes
+  const resolveViewFromUrl = (isAdmin: boolean, user: Member | null): string => {
     try {
-      if (typeof window !== 'undefined' && window.location.hash) {
-        const hash = window.location.hash.replace(/^#\/?/, '').trim();
+      if (typeof window === 'undefined') return '';
+      
+      // 1. Check path-based routes (e.g. /admin, /member, /verify, /register)
+      const pathname = window.location.pathname.replace(/^\/+/, '').replace(/\/+$/, '').trim().toLowerCase();
+      if (pathname) {
+        if (pathname === 'admin' || pathname === 'admin-login' || pathname === 'admin-dashboard') {
+          return isAdmin ? 'admin-dashboard' : 'admin-login';
+        }
+        if (pathname === 'member' || pathname === 'portal' || pathname === 'portal-login') {
+          return user ? 'portal' : 'portal-login';
+        }
+        if (pathname === 'verify' || pathname === 'verification' || pathname === 'status') {
+          return 'verify';
+        }
+        if (pathname === 'register' || pathname === 'apply') {
+          return 'register';
+        }
+        if (pathname === 'leadership' || pathname === 'executives' || pathname === 'about') {
+          return 'leadership';
+        }
+        if (pathname === 'news') return 'news';
+        if (pathname === 'events') return 'events';
+        if (pathname === 'gallery') return 'gallery';
+        if (pathname === 'documents') return 'documents';
+        if (pathname === 'home') return 'home';
+      }
+
+      // 2. Check hash-based routes (e.g. #admin, #verify, #portal)
+      if (window.location.hash) {
+        const hash = window.location.hash.replace(/^#\/?/, '').replace(/\/+$/, '').trim().toLowerCase();
+        if (hash === 'admin' || hash === 'admin-dashboard') {
+          return isAdmin ? 'admin-dashboard' : 'admin-login';
+        }
+        if (hash === 'member' || hash === 'portal') {
+          return user ? 'portal' : 'portal-login';
+        }
+        if (hash === 'verification' || hash === 'status') {
+          return 'verify';
+        }
+        if (hash === 'apply') {
+          return 'register';
+        }
+        if (hash === 'executives' || hash === 'about') {
+          return 'leadership';
+        }
         if (hash) return hash;
       }
+    } catch (e) {}
+    return '';
+  };
+
+  const [currentView, setCurrentView] = useState<string>(() => {
+    try {
+      const isAdmin = localStorage.getItem('nnepef_admin_logged_in') === 'true';
+      let user: Member | null = null;
+      try {
+        const saved = localStorage.getItem('nnepef_current_user') || sessionStorage.getItem('nnepef_current_user');
+        if (saved) user = JSON.parse(saved);
+      } catch (e) {}
+
+      const fromUrl = resolveViewFromUrl(isAdmin, user);
+      if (fromUrl) return fromUrl;
+
       const savedView = sessionStorage.getItem('nnepef_current_view') || localStorage.getItem('nnepef_current_view');
       if (savedView && typeof savedView === 'string') {
         return savedView;
@@ -192,11 +251,9 @@ export default function App() {
   useEffect(() => {
     const handleHashOrPop = () => {
       try {
-        if (typeof window !== 'undefined' && window.location.hash) {
-          const hash = window.location.hash.replace(/^#\/?/, '').trim();
-          if (hash && hash !== currentView) {
-            setCurrentView(hash);
-          }
+        const fromUrl = resolveViewFromUrl(isAdminLoggedIn, currentUser);
+        if (fromUrl && fromUrl !== currentView) {
+          setCurrentView(fromUrl);
         }
       } catch (e) {}
     };
@@ -206,7 +263,7 @@ export default function App() {
       window.removeEventListener('hashchange', handleHashOrPop);
       window.removeEventListener('popstate', handleHashOrPop);
     };
-  }, [currentView]);
+  }, [currentView, isAdminLoggedIn, currentUser]);
 
   // Sync currentView state to URL hash and storage to survive mobile transitions, tab switches, and downloads
   useEffect(() => {
@@ -654,7 +711,8 @@ export default function App() {
     savePaymentToSupabase(newPaymentRecord);
 
     if (newRequest.receiptUrl) {
-      await saveAndVerifyReceiptInSQLite(newPaymentRecord, newRequest.memberId, newRequest.receiptUrl);
+      await savePaymentToSupabase(newPaymentRecord);
+      await updateMemberFieldsInSupabase(newRequest.memberId, { paymentReceiptUrl: newRequest.receiptUrl });
     }
 
     handleAddAuditLog('RENEWAL_SUBMITTED', `Member ${newRequest.fullName} (${newRequest.membershipId}) submitted ID card renewal request with receipt.`);

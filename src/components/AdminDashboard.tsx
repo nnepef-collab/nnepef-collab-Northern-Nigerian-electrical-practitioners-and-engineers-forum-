@@ -13,6 +13,7 @@ import {
   ForumSettings, 
   AppRole,
   RenewalRequest,
+  MembershipCardHistoryItem,
   NotificationDeliveryLog,
   NotificationItem,
   AdminAccount,
@@ -32,14 +33,9 @@ import { hasPermission, PERMISSION_DEFINITIONS, PermissionKey } from '../utils/r
 import { handleApiCall } from '../utils/apiMiddleware';
 import { evaluateRlsPolicy } from '../db/rlsEvaluator';
 import { 
-  savePaymentToSQLite,
-  saveNotificationLogToSQLite, 
-  saveNotificationToSQLite, 
-  saveAuditLogToSQLite 
-} from '../services/sqliteService';
-import { 
   fetchMembersFromSupabase, 
   fetchPaymentsFromSupabase, 
+  savePaymentToSupabase,
   saveMemberToSupabase, 
   deleteMemberFromSupabase,
   updateMemberFieldsInSupabase,
@@ -47,7 +43,7 @@ import {
   isSupabaseConfigured
 } from '../services/supabaseService';
 import { SUPABASE_URL } from '../lib/supabase';
-import { downloadMemberProfilePdf, downloadMembersListPdf } from '../services/pdfService';
+import { downloadMemberProfilePdf, downloadMembersListPdf, downloadMemberIdCardPdf } from '../services/pdfService';
 import { OfficialApprovalSlipModal } from './OfficialApprovalSlipModal';
 import { DualImageUpload } from './DualImageUpload';
 import { handleImageError, getValidImageUrl, downloadFileSafely } from '../utils/imageHelpers';
@@ -85,6 +81,7 @@ import {
   Check, 
   X, 
   Download, 
+  FileDown, 
   BarChart3, 
   Lock, 
   Unlock,
@@ -111,8 +108,10 @@ import {
   RefreshCcw,
   CreditCard,
   FileCheck,
+  GraduationCap,
   LogOut
 } from 'lucide-react';
+import { parseEducationDetails } from '../utils/memberHelpers';
 
 interface AdminDashboardProps {
   members: Member[];
@@ -240,6 +239,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [isApproving, setIsApproving] = useState(false);
   const [generatedCardModalMember, setGeneratedCardModalMember] = useState<Member | null>(null);
   const [officialSlipModalMember, setOfficialSlipModalMember] = useState<Member | null>(null);
+  const [renewingMember, setRenewingMember] = useState<Member | null>(null);
+  const [renewNewId, setRenewNewId] = useState('');
+  const [renewIssueDate, setRenewIssueDate] = useState('');
+  const [renewExpiryDate, setRenewExpiryDate] = useState('');
+  const [renewalError, setRenewalError] = useState('');
+  const [isRenewing, setIsRenewing] = useState(false);
   const [isCloudSyncing, setIsCloudSyncing] = useState(false);
   const [lastSyncTimestamp, setLastSyncTimestamp] = useState<string | null>(null);
   const [sqlCopied, setSqlCopied] = useState(false);
@@ -875,17 +880,23 @@ CREATE POLICY "Admin Full Access Payments"
     setApprovalError('');
 
     try {
+      const now = new Date();
+      const issueDateStr = now.toISOString().split('T')[0];
+      const expiryDate = new Date(now);
+      expiryDate.setFullYear(expiryDate.getFullYear() + 2);
+      const expiryDateStr = expiryDate.toISOString().split('T')[0];
+
       const updatedMember: Member = {
         ...approvingMember,
         status: 'approved',
         membershipId: cleanId,
         position: assignedPosition.trim() || 'Practicing Member',
-        issueDate: approvingMember.issueDate || new Date().toISOString().split('T')[0],
-        expiryDate: approvingMember.expiryDate || new Date(Date.now() + 5 * 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-        approvedAt: new Date().toISOString(),
+        issueDate: issueDateStr,
+        expiryDate: expiryDateStr,
+        approvedAt: now.toISOString(),
         approvedBy: 'Super Admin Secretariat',
         approvalNotificationSent: true,
-        approvalNotificationSentAt: new Date().toISOString(),
+        approvalNotificationSentAt: now.toISOString(),
       };
 
       // Save directly to Supabase PostgreSQL single source of truth
@@ -908,6 +919,118 @@ CREATE POLICY "Admin Full Access Payments"
       setApprovalError(err?.message || 'Failed to approve member in Supabase. Please check connection and try again.');
     } finally {
       setIsApproving(false);
+    }
+  };
+
+  const isMemberCardExpired = (expiryDate?: string | null): boolean => {
+    if (!expiryDate) return false;
+    const clean = expiryDate.trim();
+    const expTime = new Date(clean).getTime();
+    if (isNaN(expTime)) return false;
+    return expTime < Date.now();
+  };
+
+  const handleOpenRenewModal = async (member: Member) => {
+    setRenewingMember(member);
+    setRenewalError('');
+    setIsRenewing(false);
+
+    // Default New Issue Date = Today (actual renewal approval date)
+    const today = new Date();
+    const newIssue = today.toISOString().split('T')[0];
+
+    // Default New Expiry Date = Exactly +2 years from New Issue Date
+    const expiryObj = new Date(today);
+    expiryObj.setFullYear(expiryObj.getFullYear() + 2);
+    const newExpiry = expiryObj.toISOString().split('T')[0];
+
+    setRenewIssueDate(newIssue);
+    setRenewExpiryDate(newExpiry);
+
+    // Fetch next available unique ID for renewal
+    try {
+      const nextId = await fetchNextAvailableMembershipIdFromSupabase(member.state);
+      setRenewNewId(nextId);
+    } catch (e) {
+      setRenewNewId(`NNEPEF/${member.state ? member.state.slice(0, 2).toUpperCase() : 'KN'}/0001`);
+    }
+  };
+
+  const handleRenewIssueDateChange = (val: string) => {
+    setRenewIssueDate(val);
+    try {
+      const d = new Date(val);
+      if (!isNaN(d.getTime())) {
+        d.setFullYear(d.getFullYear() + 2);
+        setRenewExpiryDate(d.toISOString().split('T')[0]);
+      }
+    } catch (e) {}
+  };
+
+  const handleConfirmRenewal = async () => {
+    if (!renewingMember) return;
+    const cleanId = renewNewId.trim().toUpperCase();
+    if (!cleanId) {
+      setRenewalError('Please specify a new unique Membership ID.');
+      return;
+    }
+
+    // Check duplicate
+    const conflict = members.find(m => m.id !== renewingMember.id && m.membershipId && m.membershipId.trim().toUpperCase() === cleanId);
+    if (conflict) {
+      setRenewalError(`Membership ID "${cleanId}" is already assigned to ${conflict.fullName}. Please choose a different ID.`);
+      return;
+    }
+
+    setIsRenewing(true);
+    setRenewalError('');
+
+    try {
+      // 1. Keep old record in history
+      const oldRecord: MembershipCardHistoryItem = {
+        membershipId: renewingMember.membershipId || 'N/A',
+        issueDate: renewingMember.issueDate || 'N/A',
+        expiryDate: renewingMember.expiryDate || 'N/A',
+        renewedAt: new Date().toISOString(),
+        status: 'expired'
+      };
+
+      const existingHistory = Array.isArray(renewingMember.previousCards) ? renewingMember.previousCards : [];
+      const updatedHistory = [...existingHistory, oldRecord];
+
+      // 2. Generate updated member object with new unique ID, new issue date, new expiry (+2 years)
+      const updated: Member = {
+        ...renewingMember,
+        status: 'approved',
+        membershipId: cleanId,
+        issueDate: renewIssueDate,
+        expiryDate: renewExpiryDate,
+        previousCards: updatedHistory,
+        notes: `${renewingMember.notes || ''}\n[RENEWED on ${new Date().toLocaleDateString()}] Old ID: ${oldRecord.membershipId} (Issued: ${oldRecord.issueDate}, Expired: ${oldRecord.expiryDate}) -> New ID: ${cleanId}`.trim()
+      };
+
+      // 3. Save to Supabase single source of truth
+      await saveMemberToSupabase(updated);
+
+      // 4. Refresh members list from Supabase
+      const freshMembers = await fetchMembersFromSupabase();
+      onUpdateMembers(freshMembers);
+
+      // 5. Add Audit Log
+      onAddAuditLog(
+        'MEMBER_ID_RENEWED',
+        `Renewed ID Card for ${updated.fullName}: Assigned New ID ${cleanId} (Valid: ${renewIssueDate} to ${renewExpiryDate}). Preserved Old ID ${oldRecord.membershipId} in history.`
+      );
+
+      const renewedFinal = freshMembers.find(m => m.id === updated.id) || updated;
+      setRenewingMember(null);
+
+      // 6. Automatically launch the newly generated Membership ID Card modal with Download button
+      setGeneratedCardModalMember(renewedFinal);
+    } catch (err: any) {
+      setRenewalError(err?.message || 'Failed to complete ID Card renewal. Please try again.');
+    } finally {
+      setIsRenewing(false);
     }
   };
 
@@ -1375,7 +1498,7 @@ CREATE POLICY "Admin Full Access Payments"
           { id: 'audit', label: 'Audit Trail Logs', icon: Activity },
           { id: 'roles', label: 'Role & RBAC System', icon: Lock },
           { id: 'settings', label: 'System Settings', icon: Settings },
-          { id: 'diagnostics', label: 'SQLite Diagnostics', icon: Database },
+          { id: 'diagnostics', label: 'Database Diagnostics', icon: Database },
         ].map((tab) => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.id;
@@ -1954,6 +2077,7 @@ CREATE POLICY "Admin Full Access Payments"
                     <th className="p-4">Membership ID</th>
                     <th className="p-4">State Chapter</th>
                     <th className="p-4">Specialization</th>
+                    <th className="p-4">Education &amp; Qualifications</th>
                     <th className="p-4">Membership Status</th>
                     <th className="p-4 text-right">Actions</th>
                   </tr>
@@ -1962,7 +2086,7 @@ CREATE POLICY "Admin Full Access Payments"
                 <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-slate-800 dark:text-slate-200">
                   {filteredMembers.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="p-8 text-center text-slate-500">
+                      <td colSpan={8} className="p-8 text-center text-slate-500">
                         <div className="max-w-md mx-auto space-y-2">
                           <Users className="w-8 h-8 text-slate-400 mx-auto" />
                           <p className="font-bold text-sm text-slate-700 dark:text-slate-300">
@@ -2021,6 +2145,33 @@ CREATE POLICY "Admin Full Access Payments"
 
                           <td className="p-4 font-medium text-slate-600 dark:text-slate-300 max-w-[180px] truncate">
                             {m.specialization}
+                          </td>
+
+                          <td className="p-4">
+                            {(() => {
+                              const edu = parseEducationDetails(m);
+                              const hasAnyEdu = edu.highestQualification || edu.courseOfStudy || edu.institution || edu.graduationYear || edu.otherQualifications || edu.professionalCertificates;
+                              if (!hasAnyEdu) {
+                                return <span className="text-slate-400 dark:text-slate-500 italic text-[11px]">Not provided</span>;
+                              }
+                              return (
+                                <div className="space-y-0.5 max-w-[200px]">
+                                  <div className="font-bold text-slate-800 dark:text-slate-200 truncate" title={edu.highestQualification || edu.courseOfStudy || 'Education Recorded'}>
+                                    {edu.highestQualification || edu.courseOfStudy || 'Education Recorded'}
+                                  </div>
+                                  {edu.institution && (
+                                    <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate" title={edu.institution}>
+                                      {edu.institution}{edu.graduationYear ? ` • ${edu.graduationYear}` : ''}
+                                    </div>
+                                  )}
+                                  {edu.courseOfStudy && edu.courseOfStudy !== edu.highestQualification && (
+                                    <div className="text-[10px] text-slate-400 dark:text-slate-500 truncate" title={edu.courseOfStudy}>
+                                      {edu.courseOfStudy}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </td>
 
                           <td className="p-4">
@@ -2107,9 +2258,22 @@ CREATE POLICY "Admin Full Access Payments"
                                 setGeneratedCardModalMember(m);
                               }}
                               className="p-1.5 rounded-lg bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 hover:bg-emerald-200"
-                              title="Generate / View Official Membership ID Card"
+                              title="View Official Membership ID Card (Vertical)"
                             >
                               <CreditCard className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={async () => {
+                                try {
+                                  await downloadMemberIdCardPdf(m, settings);
+                                } catch (err) {
+                                  console.error('Download ID Card PDF error:', err);
+                                }
+                              }}
+                              className="p-1.5 rounded-lg bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300 hover:bg-sky-200 cursor-pointer"
+                              title="Download ID Card PDF (Vertical)"
+                            >
+                              <FileDown className="w-3.5 h-3.5" />
                             </button>
                             <button
                               onClick={() => {
@@ -2119,6 +2283,22 @@ CREATE POLICY "Admin Full Access Payments"
                               title="View / Print Official Membership Approval Slip (with Secretary General Signature)"
                             >
                               <Award className="w-3.5 h-3.5" />
+                            </button>
+
+                            {/* RENEW ID CARD */}
+                            <button
+                              onClick={() => handleOpenRenewModal(m)}
+                              className={`p-1.5 rounded-lg transition-all flex items-center gap-1 cursor-pointer ${
+                                isExpired
+                                  ? 'bg-amber-500 hover:bg-amber-600 text-white font-black text-xs px-2.5 py-1 shadow-md animate-pulse'
+                                  : 'bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300 hover:bg-purple-200'
+                              }`}
+                              title={isExpired ? 'RENEW EXPIRED ID CARD (+2 Years Validity)' : 'Renew Membership ID Card (+2 Years Validity)'}
+                            >
+                              <RefreshCw className="w-3.5 h-3.5" />
+                              {isExpired && (
+                                <span className="text-[10px] font-extrabold uppercase tracking-tight">RENEW ID CARD</span>
+                              )}
                             </button>
                           </>
                         )}
@@ -2450,6 +2630,81 @@ CREATE POLICY "Admin Full Access Payments"
                   <option value="suspended">Suspended</option>
                   <option value="rejected">Rejected</option>
                 </select>
+              </div>
+
+              {/* Educational Information & Qualifications Form Fields */}
+              <div className="sm:col-span-2 p-4 bg-slate-50 dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3">
+                <h4 className="font-bold text-xs text-[#0A2E73] dark:text-[#2EA3F2] uppercase tracking-wider flex items-center gap-2">
+                  <GraduationCap className="w-4 h-4" />
+                  <span>Educational Information &amp; Qualifications</span>
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-xs">
+                  <div className="space-y-1">
+                    <label className="font-semibold text-slate-700 dark:text-slate-300">Institution / School</label>
+                    <input
+                      type="text"
+                      value={editingMember.institution || ''}
+                      onChange={(e) => setEditingMember({ ...editingMember, institution: e.target.value })}
+                      placeholder="e.g. Bayero University Kano"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="font-semibold text-slate-700 dark:text-slate-300">Course of Study</label>
+                    <input
+                      type="text"
+                      value={editingMember.courseOfStudy || ''}
+                      onChange={(e) => setEditingMember({ ...editingMember, courseOfStudy: e.target.value })}
+                      placeholder="e.g. Electrical Engineering"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="font-semibold text-slate-700 dark:text-slate-300">Graduation Year</label>
+                    <input
+                      type="text"
+                      value={editingMember.graduationYear || ''}
+                      onChange={(e) => setEditingMember({ ...editingMember, graduationYear: e.target.value })}
+                      placeholder="e.g. 2020"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="font-semibold text-slate-700 dark:text-slate-300">Highest Qualification</label>
+                    <input
+                      type="text"
+                      value={editingMember.highestQualification || editingMember.qualification || ''}
+                      onChange={(e) => setEditingMember({ ...editingMember, highestQualification: e.target.value, qualification: e.target.value })}
+                      placeholder="e.g. B.Sc. / B.Eng. Electrical Engineering"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="font-semibold text-slate-700 dark:text-slate-300">Other Qualifications</label>
+                    <input
+                      type="text"
+                      value={editingMember.otherQualifications || ''}
+                      onChange={(e) => setEditingMember({ ...editingMember, otherQualifications: e.target.value })}
+                      placeholder="e.g. Diploma in Electronics"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="font-semibold text-slate-700 dark:text-slate-300">Professional Certificates</label>
+                    <input
+                      type="text"
+                      value={editingMember.professionalCertificates || ''}
+                      onChange={(e) => setEditingMember({ ...editingMember, professionalCertificates: e.target.value })}
+                      placeholder="e.g. COREN, NSE"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                  </div>
+                </div>
               </div>
 
               {/* Next of Kin Form Fields */}
@@ -2816,7 +3071,7 @@ CREATE POLICY "Admin Full Access Payments"
                           paymentMethod: 'Bank Transfer',
                           remarks: 'Updated by Admin Treasury'
                         };
-                        await savePaymentToSQLite(payRecord);
+                        await savePaymentToSupabase(payRecord);
 
                         onAddAuditLog('RECEIPT_UPDATE', `Updated payment receipt for ${updated.fullName}`);
                       } catch (e) {
@@ -2850,6 +3105,57 @@ CREATE POLICY "Admin Full Access Payments"
               </div>
 
             </div>
+
+            {/* Educational Information & Qualifications Box in Audit Modal */}
+            {(() => {
+              const edu = parseEducationDetails(viewingReceiptMember);
+              return (
+                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/80 space-y-2 text-xs">
+                  <div className="font-bold text-[#0A2E73] dark:text-[#2EA3F2] uppercase tracking-wider flex items-center gap-1.5 border-b border-slate-200 dark:border-slate-700 pb-2">
+                    <GraduationCap className="w-4 h-4" />
+                    <span>Educational Information &amp; Qualifications</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                    <div>
+                      <span className="text-slate-500 text-[10px] uppercase font-mono block">Institution / School</span>
+                      <span className="font-bold text-slate-900 dark:text-white">
+                        {edu.institution || <span className="text-slate-400 dark:text-slate-500 italic font-normal">Not provided</span>}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 text-[10px] uppercase font-mono block">Course of Study</span>
+                      <span className="font-bold text-slate-900 dark:text-white">
+                        {edu.courseOfStudy || <span className="text-slate-400 dark:text-slate-500 italic font-normal">Not provided</span>}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 text-[10px] uppercase font-mono block">Graduation Year</span>
+                      <span className="font-mono font-bold text-slate-900 dark:text-white">
+                        {edu.graduationYear || <span className="text-slate-400 dark:text-slate-500 italic font-normal">Not provided</span>}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 text-[10px] uppercase font-mono block">Highest Qualification</span>
+                      <span className="font-bold text-slate-900 dark:text-white">
+                        {edu.highestQualification || <span className="text-slate-400 dark:text-slate-500 italic font-normal">Not provided</span>}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 text-[10px] uppercase font-mono block">Other Qualifications</span>
+                      <span className="font-bold text-slate-900 dark:text-white">
+                        {edu.otherQualifications || <span className="text-slate-400 dark:text-slate-500 italic font-normal">Not provided</span>}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 text-[10px] uppercase font-mono block">Professional Certificates</span>
+                      <span className="font-bold text-slate-900 dark:text-white">
+                        {edu.professionalCertificates || <span className="text-slate-400 dark:text-slate-500 italic font-normal">Not provided</span>}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Next of Kin Details Box in Audit Modal */}
             {viewingReceiptMember.nextOfKin && (
@@ -2909,6 +3215,18 @@ CREATE POLICY "Admin Full Access Payments"
                           <p><strong>Membership ID:</strong> ${viewingReceiptMember.membershipId}</p>
                           <p><strong>State Chapter:</strong> ${viewingReceiptMember.state}</p>
                           <p><strong>Specialization:</strong> ${viewingReceiptMember.specialization}</p>
+                          <p><strong>Educational Background:</strong> ${(() => {
+                            const e = parseEducationDetails(viewingReceiptMember);
+                            const items = [
+                              e.highestQualification ? `Qualification: ${e.highestQualification}` : null,
+                              e.institution ? `School: ${e.institution}` : null,
+                              e.courseOfStudy ? `Course: ${e.courseOfStudy}` : null,
+                              e.graduationYear ? `Year: ${e.graduationYear}` : null,
+                              e.otherQualifications ? `Other: ${e.otherQualifications}` : null,
+                              e.professionalCertificates ? `Certificates: ${e.professionalCertificates}` : null
+                            ].filter(Boolean);
+                            return items.length > 0 ? items.join(' | ') : 'Not provided';
+                          })()}</p>
                           <p><strong>Next of Kin:</strong> ${viewingReceiptMember.nextOfKin?.name || 'N/A'} (${viewingReceiptMember.nextOfKin?.relation || 'N/A'}) - Phone: ${viewingReceiptMember.nextOfKin?.phone || 'N/A'} - Address: ${viewingReceiptMember.nextOfKin?.address || 'N/A'}</p>
                           <div class="img-box">
                             <div>
@@ -3102,47 +3420,279 @@ CREATE POLICY "Admin Full Access Payments"
               </button>
             </div>
 
+            {/* Card Expired Warning Banner & One-Click Renewal */}
+            {isMemberCardExpired(generatedCardModalMember.expiryDate) && (
+              <div className="p-3.5 rounded-2xl bg-amber-500/15 border border-amber-500/40 text-amber-900 dark:text-amber-200 flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2.5">
+                  <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0" />
+                  <div>
+                    <p className="font-extrabold uppercase tracking-wide">This Membership ID Card has EXPIRED</p>
+                    <p className="text-[11px] text-amber-800/90 dark:text-amber-300/90">
+                      Expired on: <span className="font-bold">{generatedCardModalMember.expiryDate}</span>. Click Renew to issue a new unique ID and grant 2 years validity.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleOpenRenewModal(generatedCardModalMember)}
+                  className="px-3.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-black text-xs uppercase tracking-wider flex items-center gap-1.5 shadow whitespace-nowrap cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>RENEW ID CARD</span>
+                </button>
+              </div>
+            )}
+
             {/* High-Resolution ID Card Preview */}
             <div className="flex justify-center p-2">
               <div className="w-full max-w-md">
                 <MembershipCard
                   member={generatedCardModalMember}
                   logoUrl={settings?.logoUrl}
+                  settings={settings}
                 />
               </div>
             </div>
+
+            {/* Previous Card Records History (if renewed previously) */}
+            {Array.isArray(generatedCardModalMember.previousCards) && generatedCardModalMember.previousCards.length > 0 && (
+              <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-xs space-y-2">
+                <div className="flex items-center justify-between font-bold text-slate-700 dark:text-slate-300">
+                  <span className="flex items-center gap-1.5">
+                    <RotateCcw className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Card Renewal History (Preserved Records)</span>
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-normal">
+                    {generatedCardModalMember.previousCards.length} previous version(s)
+                  </span>
+                </div>
+                <div className="space-y-1.5 max-h-28 overflow-y-auto">
+                  {generatedCardModalMember.previousCards.map((card, idx) => (
+                    <div
+                      key={idx}
+                      className="flex flex-wrap items-center justify-between p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-[11px]"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono font-bold text-[#0052CC] dark:text-sky-400">
+                          {card.membershipId}
+                        </span>
+                        <span className="text-slate-500">
+                          Issued: {card.issueDate} • Expired: {card.expiryDate}
+                        </span>
+                      </div>
+                      <span className="px-2 py-0.5 rounded-full bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300 font-extrabold uppercase text-[9px]">
+                        {card.status || 'EXPIRED'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Quick Actions Footer */}
             <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-slate-200 dark:border-slate-800 text-xs">
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
+                  onClick={() => downloadMemberIdCardPdf(generatedCardModalMember, settings)}
+                  className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-sky-600 to-blue-700 hover:from-sky-700 hover:to-blue-800 text-white font-bold flex items-center gap-2 shadow cursor-pointer"
+                >
+                  <FileDown className="w-4 h-4" />
+                  <span>Download ID Card (PDF)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleOpenRenewModal(generatedCardModalMember)}
+                  className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold flex items-center gap-2 shadow cursor-pointer"
+                  title="Renew Membership ID Card (+2 Years Validity)"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  <span>Renew ID Card</span>
+                </button>
+
+                <button
+                  type="button"
                   onClick={() => setOfficialSlipModalMember(generatedCardModalMember)}
-                  className="px-4 py-2.5 rounded-xl bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 font-bold flex items-center gap-2 hover:bg-amber-200"
+                  className="px-4 py-2.5 rounded-xl bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 font-bold flex items-center gap-2 hover:bg-amber-200 cursor-pointer"
                 >
                   <Award className="w-4 h-4" />
-                  <span>Official Approval Slip (with Signature)</span>
+                  <span>Official Approval Slip</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => downloadMemberProfilePdf(generatedCardModalMember, settings)}
-                  className="px-4 py-2.5 rounded-xl bg-sky-100 dark:bg-sky-950/80 text-sky-800 dark:text-sky-300 font-bold flex items-center gap-2 hover:bg-sky-200"
+                  className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-bold flex items-center gap-2 hover:bg-slate-200 cursor-pointer"
                 >
                   <Download className="w-4 h-4" />
-                  <span>Download Member Dossier (PDF)</span>
+                  <span>Dossier (PDF)</span>
                 </button>
               </div>
 
               <button
                 type="button"
                 onClick={() => setGeneratedCardModalMember(null)}
-                className="px-6 py-2.5 rounded-xl bg-[#0A2E73] text-white font-bold hover:bg-[#08245A] shadow"
+                className="px-6 py-2.5 rounded-xl bg-[#0A2E73] text-white font-bold hover:bg-[#08245A] shadow cursor-pointer"
               >
                 Close &amp; Return to Register
               </button>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* RENEW ID CARD MODAL */}
+      {renewingMember && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
+          <div className="glass-card w-full max-w-lg p-6 rounded-3xl space-y-5 border border-sky-500/40 shadow-2xl bg-white dark:bg-slate-900 my-8">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-amber-100 dark:bg-amber-950/80 rounded-2xl text-amber-600 dark:text-amber-400">
+                  <RefreshCw className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-display font-bold text-base text-slate-900 dark:text-white">
+                    RENEW MEMBERSHIP ID CARD
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Official Card Re-issuance &amp; 2-Year Validity Extension
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setRenewingMember(null)}
+                className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-500 hover:text-slate-900 dark:hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Member Summary */}
+            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 flex items-center gap-4">
+              <div className="w-14 h-14 rounded-full overflow-hidden bg-slate-200 border-2 border-[#00A3FF] flex-shrink-0">
+                <img
+                  src={getValidImageUrl(renewingMember.passportUrl || renewingMember.passportPhotoUrl, 'avatar')}
+                  alt={renewingMember.fullName}
+                  onError={(e) => handleImageError(e, 'avatar')}
+                  className="w-full h-full object-cover"
+                />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h4 className="font-bold text-slate-900 dark:text-white truncate">
+                  {renewingMember.fullName}
+                </h4>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  {renewingMember.position || 'Practicing Member'} • {renewingMember.state} Chapter
+                </p>
+              </div>
+            </div>
+
+            {/* OLD RECORD (Preserved in History) */}
+            <div className="p-4 rounded-2xl bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50 space-y-2 text-xs">
+              <div className="flex items-center justify-between font-bold text-amber-900 dark:text-amber-200">
+                <span>PREVIOUS / EXPIRED RECORD (PRESERVED IN HISTORY)</span>
+                <span className="px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-300 text-[10px] font-extrabold uppercase">
+                  {isMemberCardExpired(renewingMember.expiryDate) ? 'EXPIRED' : 'ACTIVE / EXPIRING'}
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-slate-700 dark:text-slate-300 pt-1">
+                <div>
+                  <span className="text-[10px] text-slate-400 block uppercase">Old ID</span>
+                  <strong className="font-mono text-slate-900 dark:text-white font-bold">{renewingMember.membershipId || 'N/A'}</strong>
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-400 block uppercase">Old Issue Date</span>
+                  <strong className="text-slate-900 dark:text-white">{renewingMember.issueDate || 'N/A'}</strong>
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-400 block uppercase">Old Expiry Date</span>
+                  <strong className="text-slate-900 dark:text-white">{renewingMember.expiryDate || 'N/A'}</strong>
+                </div>
+              </div>
+            </div>
+
+            {/* NEW RENEWAL DETAILS */}
+            <div className="space-y-4 pt-1 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  NEW Unique Membership ID <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={renewNewId}
+                  onChange={(e) => setRenewNewId(e.target.value)}
+                  placeholder="e.g. NNEPEF/KN/0307"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono font-bold text-sm"
+                />
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                  Automatically assigned next available unique ID. You can adjust if required.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    New Issue Date (Approval Date)
+                  </label>
+                  <input
+                    type="date"
+                    value={renewIssueDate}
+                    onChange={(e) => handleRenewIssueDateChange(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-semibold"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    New Expiry Date (+2 Years Validity)
+                  </label>
+                  <input
+                    type="date"
+                    value={renewExpiryDate}
+                    onChange={(e) => setRenewExpiryDate(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-semibold"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {renewalError && (
+              <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300 text-xs font-semibold flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                <span>{renewalError}</span>
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-200 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setRenewingMember(null)}
+                className="px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-semibold hover:bg-slate-100 dark:hover:bg-slate-800 text-xs cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isRenewing}
+                onClick={handleConfirmRenewal}
+                className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-sky-600 to-blue-700 hover:from-sky-700 hover:to-blue-800 text-white font-bold text-xs flex items-center gap-2 shadow disabled:opacity-50 cursor-pointer"
+              >
+                {isRenewing ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>Renewing ID Card...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Confirm &amp; Generate New ID Card</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -5599,7 +6149,7 @@ CREATE POLICY "Admin Full Access Payments"
         </div>
       )}
 
-      {/* TAB: LOCAL SQLITE & STORAGE DIAGNOSTICS */}
+      {/* TAB: SUPABASE POSTGRESQL & CLOUD DIAGNOSTICS */}
       {activeTab === 'diagnostics' && <AdminDiagnosticsPanel />}
 
       {/* Leadership Section Security Password Modal */}

@@ -63,7 +63,10 @@ function isValidSupabaseKey(keyToTest: string): boolean {
 function resolveSupabaseUrl(): string {
   const envUrl = getEnv('VITE_SUPABASE_URL') || getEnv('SUPABASE_URL');
   if (envUrl && typeof envUrl === 'string' && isValidHttpUrl(envUrl.trim())) {
-    return normalizeSupabaseUrl(envUrl);
+    const normalized = normalizeSupabaseUrl(envUrl);
+    if (normalized.includes('twpauvrjmaqdzrwteksd')) {
+      return normalized;
+    }
   }
   return DEFAULT_SUPABASE_PROJECT_URL;
 }

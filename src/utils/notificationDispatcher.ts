@@ -1,5 +1,5 @@
 import { Member, ForumSettings, NotificationDeliveryLog, NotificationItem } from '../types';
-import { saveNotificationLogToSQLite, saveNotificationToSQLite } from '../services/sqliteService';
+import { saveNotificationDeliveryLogToSupabase, saveNotificationToSupabase } from '../services/supabaseService';
 
 export type NotificationEventType =
   | 'registration_received'
@@ -172,7 +172,7 @@ export async function dispatchEventNotification(
         errorMessage: resData.error || resData.errorMessage || (resData.success ? undefined : 'Email delivery failed'),
       };
       logs.push(emailLog);
-      await saveNotificationLogToSQLite(emailLog);
+      await saveNotificationDeliveryLogToSupabase(emailLog);
       if (onAddLog) onAddLog(emailLog);
     } catch (err) {
       const emailLog: NotificationDeliveryLog = {
@@ -190,7 +190,7 @@ export async function dispatchEventNotification(
         errorMessage: err instanceof Error ? err.message : String(err),
       };
       logs.push(emailLog);
-      await saveNotificationLogToSQLite(emailLog);
+      await saveNotificationDeliveryLogToSupabase(emailLog);
       if (onAddLog) onAddLog(emailLog);
     }
   }
@@ -233,7 +233,7 @@ export async function dispatchEventNotification(
         errorMessage: resData.error || resData.errorMessage || (resData.success ? undefined : 'SMS delivery failed'),
       };
       logs.push(smsLog);
-      await saveNotificationLogToSQLite(smsLog);
+      await saveNotificationDeliveryLogToSupabase(smsLog);
       if (onAddLog) onAddLog(smsLog);
     } catch (err) {
       const smsLog: NotificationDeliveryLog = {
@@ -251,7 +251,7 @@ export async function dispatchEventNotification(
         errorMessage: err instanceof Error ? err.message : String(err),
       };
       logs.push(smsLog);
-      await saveNotificationLogToSQLite(smsLog);
+      await saveNotificationDeliveryLogToSupabase(smsLog);
       if (onAddLog) onAddLog(smsLog);
     }
   }
@@ -294,7 +294,7 @@ export async function dispatchEventNotification(
         errorMessage: resData.error || resData.errorMessage || (resData.success ? undefined : 'WhatsApp delivery failed'),
       };
       logs.push(waLog);
-      await saveNotificationLogToSQLite(waLog);
+      await saveNotificationDeliveryLogToSupabase(waLog);
       if (onAddLog) onAddLog(waLog);
     } catch (err) {
       const waLog: NotificationDeliveryLog = {
@@ -312,7 +312,7 @@ export async function dispatchEventNotification(
         errorMessage: err instanceof Error ? err.message : String(err),
       };
       logs.push(waLog);
-      await saveNotificationLogToSQLite(waLog);
+      await saveNotificationDeliveryLogToSupabase(waLog);
       if (onAddLog) onAddLog(waLog);
     }
   }
@@ -328,7 +328,7 @@ export async function dispatchEventNotification(
       type: inAppType,
       link: event === 'registration_approved' || event === 'membership_renewed' ? 'id-card' : 'dashboard',
     };
-    await saveNotificationToSQLite(inAppNotif);
+    await saveNotificationToSupabase(inAppNotif);
     if (onAddInApp) onAddInApp(inAppNotif);
 
     const inAppLogItem: NotificationDeliveryLog = {
@@ -345,7 +345,7 @@ export async function dispatchEventNotification(
       provider: 'Portal In-App System',
     };
     logs.push(inAppLogItem);
-    await saveNotificationLogToSQLite(inAppLogItem);
+    await saveNotificationDeliveryLogToSupabase(inAppLogItem);
     if (onAddLog) onAddLog(inAppLogItem);
   }
 

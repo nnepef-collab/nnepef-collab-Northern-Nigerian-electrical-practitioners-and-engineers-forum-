@@ -392,9 +392,6 @@ export async function uploadFileToSupabaseStorage(
   return '';
 }
 
-// Alias for backwards compatibility across existing components
-export const uploadFileToSQLiteStorage = uploadFileToSupabaseStorage;
-
 // ============================================================================
 // 2. MEMBERS DATABASE API (Supabase PostgreSQL `members` table)
 // ============================================================================
@@ -451,10 +448,12 @@ export function mapSupabaseRowToMember(row: any): Member {
     status: normalizeMemberStatus(row.status),
     role: row.role || 'Member',
     position: row.position || 'Member',
-    issueDate: row.issue_date || row.issueDate || '',
+    qualificationDetails: qualDetails,
+    qualification_details: row.qualification_details || null,
+    issueDate: row.approval_date || row.issue_date || row.issueDate || '',
     expiryDate: row.expiry_date || row.expiryDate || '',
     registeredAt: row.registered_at || row.registeredAt || row.created_at || row.createdAt || new Date().toISOString(),
-    approvedAt: row.approved_at || row.approvedAt || undefined,
+    approvedAt: row.approval_date || row.approved_at || row.approvedAt || undefined,
     approvedBy: row.approved_by || row.approvedBy || undefined,
     rejectedBy: row.rejected_by || row.rejectedBy || undefined,
     rejectionReason: row.rejection_reason || row.rejectionReason || undefined,
@@ -657,12 +656,14 @@ export interface DiagnosticVerificationResult {
  * returning ONLY safe metadata (exists, id, status, registered_at) and NEVER private personal data (PII).
  */
 export async function verifyMemberStatusDiagnostic(targetId: string): Promise<DiagnosticVerificationResult> {
-  if (!targetId) return { exists: false, error: 'Target ID is required' };
+  if (!targetId || !targetId.trim()) return { exists: false, error: 'Target ID is required' };
+  const cleanId = targetId.trim();
+  const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(cleanId);
 
-  // 1. Try secure RPC on Supabase PostgreSQL (SECURITY DEFINER with strict sanitized output)
-  if (isSupabaseConfigured()) {
+  // 1. If targetId is a valid UUID, use secure RPC on Supabase PostgreSQL
+  if (isSupabaseConfigured() && isUUID) {
     try {
-      const { data, error } = await supabase.rpc('verify_member_status_diagnostic', { target_id: targetId });
+      const { data, error } = await supabase.rpc('verify_member_status_diagnostic', { target_id: cleanId });
       if (!error && data && typeof data === 'object') {
         return {
           exists: Boolean(data.exists),
@@ -681,7 +682,7 @@ export async function verifyMemberStatusDiagnostic(targetId: string): Promise<Di
 
   // 2. Try server-side verification proxy /api/members/verify-diagnostic/:id
   try {
-    const res = await fetch(getApiEndpoint(`/api/members/verify-diagnostic/${encodeURIComponent(targetId)}`));
+    const res = await fetch(getApiEndpoint(`/api/members/verify-diagnostic/${encodeURIComponent(cleanId)}`));
     if (res.ok) {
       const data = await res.json();
       if (data && typeof data === 'object' && data.exists !== undefined) {
@@ -700,14 +701,20 @@ export async function verifyMemberStatusDiagnostic(targetId: string): Promise<Di
     // Fallback
   }
 
-  // 3. Fallback: check if we can query minimal columns directly
+  // 3. Direct read-only query using appropriate column types
   if (isSupabaseConfigured()) {
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('members')
-        .select('id, status, membership_id, application_reference, registered_at')
-        .eq('id', targetId)
-        .maybeSingle();
+        .select('id, status, membership_id, application_reference, registered_at');
+
+      if (isUUID) {
+        query = query.eq('id', cleanId);
+      } else {
+        query = query.or(`membership_id.eq.${cleanId},application_reference.eq.${cleanId}`);
+      }
+
+      const { data, error } = await query.maybeSingle();
 
       if (!error && data) {
         return {
@@ -724,13 +731,12 @@ export async function verifyMemberStatusDiagnostic(targetId: string): Promise<Di
     }
   }
 
-  return { exists: false, id: targetId };
+  return { exists: false, id: cleanId };
 }
 
 export const fetchApprovedMemberById = fetchMemberByIdFromSupabase;
 
 export const loadMembers = fetchMembersFromSupabase;
-export const fetchMembersFromSQLite = fetchMembersFromSupabase;
 
 export function subscribeToMembers(callback: (members: Member[]) => void) {
   let isSubscribed = true;
@@ -925,8 +931,6 @@ export async function saveMemberToSupabase(member: Member): Promise<Member> {
   return savedMemberRecord;
 }
 
-export const saveMemberToSQLite = saveMemberToSupabase;
-
 export async function updateMemberFieldsInSupabase(memberId: string, partialFields: Partial<Member>): Promise<Member | null> {
   if (!memberId) return null;
 
@@ -997,8 +1001,6 @@ export async function updateMemberFieldsInSupabase(memberId: string, partialFiel
   return null;
 }
 
-export const updateMemberFieldsInSQLite = updateMemberFieldsInSupabase;
-
 export async function deleteMemberFromSupabase(memberId: string): Promise<Member[]> {
   // 1. Delete via server API
   try {
@@ -1028,8 +1030,6 @@ export async function deleteMemberFromSupabase(memberId: string): Promise<Member
   return fetchMembersFromSupabase();
 }
 
-export const deleteMemberFromSQLite = deleteMemberFromSupabase;
-
 export async function approveMemberOnServer(memberId: string, approvedBy?: string, position?: string): Promise<Member | null> {
   const existing = await fetchApprovedMemberById(memberId);
   if (!existing) return null;
@@ -1039,11 +1039,19 @@ export async function approveMemberOnServer(memberId: string, approvedBy?: strin
     generatedId = await fetchNextAvailableMembershipIdFromSupabase(existing.state);
   }
 
+  const now = new Date();
+  const issueDateStr = now.toISOString().split('T')[0];
+  const expiryDate = new Date(now);
+  expiryDate.setFullYear(expiryDate.getFullYear() + 2);
+  const expiryDateStr = expiryDate.toISOString().split('T')[0];
+
   const updated: Member = {
     ...existing,
     status: 'approved',
     membershipId: generatedId,
-    approvedAt: new Date().toISOString(),
+    issueDate: existing.issueDate || issueDateStr,
+    expiryDate: existing.expiryDate || expiryDateStr,
+    approvedAt: now.toISOString(),
     approvedBy: approvedBy || 'Super Admin Secretariat',
     position: position || existing.position || 'Member'
   };
@@ -1129,33 +1137,42 @@ export async function verifyMemberByMembershipAndPhone(
     try {
       const { data, error } = await supabase
         .from('members')
-        .select('id, membership_id, full_name, state, lga, occupation, specialization, membership_type, position, status, passport_url, passport_photo_url, issue_date, expiry_date, approved_at, registered_at, phone')
+        .select('id, membership_id, full_name, state, lga, occupation, specialization, membership_type, position, status, passport_url, approval_date, expiry_date, registered_at, phone')
         .ilike('membership_id', cleanId)
         .in('status', ['approved', 'Approved', 'active', 'Active'])
         .maybeSingle();
 
       if (!error && data) {
-        const dbPhoneDigits = String(data.phone || '').replace(/\D/g, '');
-        const inputSuffix = digitsOnlyPhone.slice(-8);
-        const dbSuffix = dbPhoneDigits.slice(-8);
+        const dbPhoneRaw = String(data.phone || '');
+        const candidatePhones = dbPhoneRaw.split(/[\/;,]/).map(p => p.trim()).filter(Boolean);
+        if (candidatePhones.length === 0) candidatePhones.push(dbPhoneRaw);
 
-        if (inputSuffix && dbSuffix && inputSuffix === dbSuffix) {
+        const phoneMatched = candidatePhones.some(cand => {
+          const candDigits = cand.replace(/\D/g, '');
+          if (!candDigits || digitsOnlyPhone.length < 8) return false;
+          if (candDigits === digitsOnlyPhone) return true;
+          const inputSuffix = digitsOnlyPhone.slice(-8);
+          const candSuffix = candDigits.slice(-8);
+          return inputSuffix.length === 8 && candSuffix.length === 8 && inputSuffix === candSuffix;
+        });
+
+        if (phoneMatched) {
           return {
             id: data.id,
             membershipId: data.membership_id,
             fullName: data.full_name,
             state: data.state,
-            lga: data.lga,
-            occupation: data.occupation,
-            specialization: data.specialization,
-            membershipType: data.membership_type,
+            lga: data.lga || '',
+            occupation: data.occupation || 'Practitioner',
+            specialization: data.specialization || '',
+            membershipType: data.membership_type || 'Full Member',
             position: data.position || 'Member',
             status: 'Approved & Certified',
-            passportUrl: data.passport_url || data.passport_photo_url,
-            issueDate: data.issue_date,
-            expiryDate: data.expiry_date,
-            approvedAt: data.approved_at,
-            registeredAt: data.registered_at
+            passportUrl: data.passport_url || '',
+            issueDate: data.approval_date || null,
+            expiryDate: data.expiry_date || null,
+            approvedAt: data.approval_date || null,
+            registeredAt: data.registered_at || null
           };
         }
       }
@@ -1303,7 +1320,6 @@ export async function fetchPaymentsFromSupabase(): Promise<PaymentRecord[]> {
 }
 
 export const loadPayments = fetchPaymentsFromSupabase;
-export const fetchPaymentsFromSQLite = fetchPaymentsFromSupabase;
 
 export function subscribeToPayments(callback: (payments: PaymentRecord[]) => void) {
   let isSubscribed = true;
@@ -1398,19 +1414,6 @@ export async function savePaymentToSupabase(payment: PaymentRecord): Promise<Pay
   }
 
   return payment;
-}
-
-export const savePaymentToSQLite = savePaymentToSupabase;
-
-export async function saveAndVerifyReceiptInSQLite(
-  paymentRecord: PaymentRecord,
-  memberId?: string,
-  receiptUrl?: string
-): Promise<void> {
-  await savePaymentToSupabase(paymentRecord);
-  if (memberId && receiptUrl) {
-    await updateMemberFieldsInSupabase(memberId, { paymentReceiptUrl: receiptUrl });
-  }
 }
 
 // ============================================================================
@@ -1723,7 +1726,7 @@ export function subscribeToNotifications(callback: (notifications: NotificationI
   return () => {};
 }
 
-export async function saveNotificationToSQLite(item: NotificationItem): Promise<void> {
+export async function saveNotificationToSupabase(item: NotificationItem): Promise<void> {
   addLocalNotification({
     title: item.title,
     message: item.message,
@@ -1757,31 +1760,7 @@ export function subscribeToNotificationLogs(callback: (logs: NotificationDeliver
   return () => {};
 }
 
-export async function saveNotificationLogToSQLite(log: NotificationDeliveryLog): Promise<void> {
-  addLocalDeliveryLog(log);
-
-  if (isSupabaseConfigured()) {
-    try {
-      await supabase.from('notification_delivery_logs').insert({
-        id: log.id || `log_${Date.now()}`,
-        recipient_name: log.recipientName,
-        recipient_email: log.recipientEmail,
-        recipient_phone: log.recipientPhone,
-        membership_id: log.membershipId,
-        channel: log.channel,
-        subject: log.subject || null,
-        message: log.message,
-        status: log.status,
-        sent_at: log.sentAt || new Date().toISOString(),
-        provider: log.provider || null,
-        message_id: log.messageId || null,
-        error_message: log.errorMessage || null
-      });
-    } catch (e) {}
-  }
-}
-
-export async function deleteNotificationLogFromSQLite(id: string): Promise<void> {
+export async function deleteNotificationDeliveryLogFromSupabase(id: string): Promise<void> {
   deleteDeliveryLog(id);
   if (isSupabaseConfigured()) {
     try {
@@ -1790,7 +1769,7 @@ export async function deleteNotificationLogFromSQLite(id: string): Promise<void>
   }
 }
 
-export async function clearAllNotificationLogsFromSQLite(_currentLogs?: any[]): Promise<void> {
+export async function clearAllNotificationDeliveryLogsFromSupabase(_currentLogs?: any[]): Promise<void> {
   clearAllDeliveryLogs();
   if (isSupabaseConfigured()) {
     try {
@@ -1804,7 +1783,7 @@ export function subscribeToAuditLogs(callback: (logs: AuditLog[]) => void) {
   return () => {};
 }
 
-export async function saveAuditLogToSQLite(
+export async function saveAuditLogToSupabase(
   actorNameOrLog: string | AuditLog,
   actorRole?: string,
   action?: string,
@@ -1838,8 +1817,6 @@ export async function saveAuditLogToSQLite(
     } catch (e) {}
   }
 }
-
-export const saveAuditLogToSupabase = saveAuditLogToSQLite;
 
 export function subscribeToSettings(callback: (settings: ForumSettings) => void) {
   callback(getLocalSettings());
@@ -1920,8 +1897,6 @@ export async function saveSettingsToSupabase(settings: ForumSettings): Promise<F
 
   return settings;
 }
-
-export const saveSettingsToSQLite = saveSettingsToSupabase;
 
 // ============================================================================
 // 4.14 ADMIN ACCOUNTS API (Supabase PostgreSQL `admin_accounts` / `admin_profiles`)
@@ -2090,6 +2065,7 @@ export async function fetchSupabaseDiagnostics(): Promise<any> {
   let registrationRpcStatus = 'FAILED';
   let latencyMs = 0;
   let memberCount = 0;
+  let paymentsCount = 0;
   let pendingCount = 0;
   let approvedCount = 0;
   let rejectedCount = 0;
@@ -2132,22 +2108,20 @@ export async function fetchSupabaseDiagnostics(): Promise<any> {
         lastRegistrationError = error.message;
       }
 
-      // Check Registration RPC Function Status
+      // Registration capability is verified purely via read-only table query status
+      // (100% READ-ONLY - no INSERT/UPDATE/DELETE/RPC write operations)
+      registrationRpcStatus = membersTableStatus === 'OK' ? 'OK' : 'STANDBY';
+
+      // Read-only Payments verification
       try {
-        // Attempt a harmless verification call to RPC
-        const { error: rpcPingError } = await supabase.rpc('public_register_member', {
-          p_id: 'ping_test_nonexistent',
-          p_full_name: 'RPC Diagnostics Ping',
-          p_email: 'diagnostics@example.com'
-        });
-        // If RPC function exists (even if it throws validation or rolls back), it confirms existence
-        if (!rpcPingError || rpcPingError.code !== '42883') {
-          registrationRpcStatus = 'OK';
-        } else {
-          registrationRpcStatus = `FAILED: ${rpcPingError.message}`;
+        const { count: pCount, error: pErr } = await supabase
+          .from('payment_records')
+          .select('id', { count: 'exact', head: true });
+        if (!pErr && typeof pCount === 'number') {
+          paymentsCount = pCount;
         }
-      } catch (rpcErr: any) {
-        registrationRpcStatus = 'OK'; // Available
+      } catch {
+        // Safe read failure fallback
       }
 
       // Check Storage Availability
@@ -2194,7 +2168,7 @@ export async function fetchSupabaseDiagnostics(): Promise<any> {
     connectionStatus: dbConnection,
     latencyMs,
     memberCount,
-    paymentCount: getLocalPayments().length,
+    paymentCount: paymentsCount,
     storageAvailable: configured,
     realtimeAvailable: configured
   };
@@ -2221,8 +2195,6 @@ export async function deletePaymentFromSupabase(paymentId: string): Promise<Paym
 
   return getLocalPayments();
 }
-
-export const deletePaymentFromSQLite = deletePaymentFromSupabase;
 
 // ============================================================================
 // 6. CONTENT & PORTAL MANAGEMENT TABLES (SUPABASE POSTGRESQL)
@@ -3089,8 +3061,6 @@ export async function deleteItemFromCollection(
     }
   }
 }
-
-export const fetchSQLiteDiagnostics = fetchSupabaseDiagnostics;
 
 export {
   saveLocalPayment,

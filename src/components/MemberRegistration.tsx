@@ -16,6 +16,7 @@ import {
   Check, 
   Receipt, 
   AlertCircle, 
+  AlertTriangle,
   CheckCircle2, 
   FileText, 
   Download,
@@ -372,14 +373,14 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
                       });
                     }}
                     className="p-0.5 hover:bg-sky-200 dark:hover:bg-sky-900 rounded transition-colors text-sky-700 dark:text-sky-300 cursor-pointer"
-                    title="Kwafi Lambar Reference (Copy Ref)"
+                    title="Copy Reference Number"
                   >
                     {copiedRef ? <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                   </button>
                 </div>
                 {copiedRef && (
                   <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 animate-in fade-in">
-                    An Kwafa!
+                    Copied!
                   </span>
                 )}
                 <span className="px-2.5 py-1 rounded-md text-xs font-bold bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 flex items-center gap-1">

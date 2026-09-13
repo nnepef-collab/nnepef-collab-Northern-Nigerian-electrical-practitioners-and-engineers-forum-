@@ -1,10 +1,7 @@
 /**
- * N-NEPEF 2020 Portal - Offline Sync Manager for Local SQLite Database
- * 100% Offline, Internal Storage, Self-Contained.
+ * N-NEPEF 2020 Portal - Offline Sync Manager for Supabase
  */
 
-import { recordSQLiteDiagnosticLog } from './sqliteDiagnostics';
-import { analyzeSQLiteError } from './sqliteErrorAnalyzer';
 import { supabase, isSupabaseConfigured } from './supabase';
 import { saveMemberToSupabase, deleteMemberFromSupabase, savePaymentToSupabase, deletePaymentFromSupabase } from '../services/supabaseService';
 
@@ -38,7 +35,7 @@ export interface SyncStatusState {
   failedCount: number;
 }
 
-const DB_NAME = 'NepefOfflineSQLiteSyncDB';
+const DB_NAME = 'NepefOfflineSyncDB';
 const STORE_NAME = 'offline_operations';
 const DB_VERSION = 1;
 
@@ -128,7 +125,7 @@ export async function queueOperation(
   moduleName?: string
 ): Promise<string> {
   const db = await getDB();
-  const opId = `sqlite_op_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const opId = `sync_op_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
   const queuedOp: QueuedOperation = {
     id: opId,
@@ -137,7 +134,7 @@ export async function queueOperation(
     operation,
     payload,
     options,
-    moduleName: moduleName || 'SQLite Data Service',
+    moduleName: moduleName || 'Data Service',
     retryCount: 0,
     status: 'PENDING',
   };
@@ -318,8 +315,7 @@ export async function processQueue(): Promise<{
         succeeded++;
       } catch (err: any) {
         failed++;
-        await updateOperationStatus(op.id, 'FAILED', err.message || 'SQLite Sync Error');
-        analyzeSQLiteError(err);
+        await updateOperationStatus(op.id, 'FAILED', err.message || 'Sync Error');
       }
     }
 

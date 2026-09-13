@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Member, ForumSettings, NotificationDeliveryLog, NotificationItem } from '../types';
 import { dispatchEventNotification } from '../utils/notificationDispatcher';
-import { saveNotificationLogToSQLite, deleteNotificationLogFromSQLite, clearAllNotificationLogsFromSQLite } from '../services/sqliteService';
+import { saveNotificationDeliveryLogToSupabase, deleteNotificationDeliveryLogFromSupabase, clearAllNotificationDeliveryLogsFromSupabase } from '../services/supabaseService';
 import { 
   Bell, 
   Mail, 
@@ -388,7 +388,7 @@ export const ApprovalNotificationManager: React.FC<ApprovalNotificationManagerPr
             errorMessage: resData.log.error_message || undefined,
           };
           onUpdateNotificationLogs([updatedLog, ...notificationLogs]);
-          await saveNotificationLogToSQLite(updatedLog);
+          await saveNotificationDeliveryLogToSupabase(updatedLog);
         }
       } else {
         showToast('error', `Resend failed: ${resData.error || resData.errorMessage || 'Configuration error'}`);
@@ -404,7 +404,7 @@ export const ApprovalNotificationManager: React.FC<ApprovalNotificationManagerPr
   const handleDeleteLog = async (logId: string) => {
     if (!window.confirm('Are you sure you want to delete this notification record from history?')) return;
 
-    await deleteNotificationLogFromSQLite(logId);
+    await deleteNotificationDeliveryLogFromSupabase(logId);
     const updated = notificationLogs.filter(l => l.id !== logId);
     onUpdateNotificationLogs(updated);
     onAddAuditLog('NOTIFICATION_LOG_DELETE', `Deleted notification log entry ID: ${logId}`);
@@ -418,7 +418,7 @@ export const ApprovalNotificationManager: React.FC<ApprovalNotificationManagerPr
       return;
     }
 
-    await clearAllNotificationLogsFromSQLite(notificationLogs);
+    await clearAllNotificationDeliveryLogsFromSupabase(notificationLogs);
     onUpdateNotificationLogs([]);
     onAddAuditLog('NOTIFICATION_LOG_CLEAR_ALL', 'Cleared all notification delivery history logs');
     showToast('success', 'All notification history logs have been cleared.');
@@ -982,7 +982,7 @@ export const ApprovalNotificationManager: React.FC<ApprovalNotificationManagerPr
 
                 <div className="p-3 bg-slate-800/50 rounded-xl text-[10px] text-slate-400 flex items-start gap-2 border border-slate-700/50">
                   <Info className="w-4 h-4 text-sky-400 flex-shrink-0 mt-0.5" />
-                  <span>Dispatched notifications execute via real API/SMTP with delivery logging to local SQLite database.</span>
+                  <span>Dispatched notifications execute via real API/SMTP with delivery logging to Supabase.</span>
                 </div>
               </div>
             </div>

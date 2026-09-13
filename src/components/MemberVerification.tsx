@@ -73,13 +73,13 @@ Verification Date: ${new Date().toLocaleDateString('en-GB', { day: 'numeric', mo
 Portal Reference: Verified against official database records
 ====================================================`;
 
-    copyToClipboard(textToCopy, 'An kwafi cikakken sakamakon tantancewa zuwa ga clipboard!');
+    copyToClipboard(textToCopy, 'Full verification result copied to clipboard!');
   };
 
   const handleCopyIdOnly = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!verifiedMember?.membershipId) return;
-    copyToClipboard(verifiedMember.membershipId, `An kwafi lambar memba: ${verifiedMember.membershipId}`);
+    copyToClipboard(verifiedMember.membershipId, `Membership ID copied: ${verifiedMember.membershipId}`);
   };
 
   const handleSearch = async (e: React.FormEvent) => {
@@ -241,10 +241,10 @@ Portal Reference: Verified against official database records
                     type="button"
                     onClick={handleCopyFullResult}
                     className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold transition-all bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow cursor-pointer"
-                    title="Kwafi Cikakken Sakamakon Tantancewa"
+                    title="Copy Full Verification Result"
                   >
                     {copied ? <Check className="w-3.5 h-3.5 text-slate-950" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{copied ? 'An Kwafa!' : 'Kwafi Sakamako'}</span>
+                    <span>{copied ? 'Copied!' : 'Copy Result'}</span>
                   </button>
                   <div className="px-3 py-1 rounded-full bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 text-xs font-black uppercase tracking-wider border border-emerald-300 dark:border-emerald-800">
                     VERIFIED ACTIVE
@@ -283,7 +283,7 @@ Portal Reference: Verified against official database records
                       type="button"
                       onClick={handleCopyIdOnly}
                       className="p-1 hover:bg-sky-200 dark:hover:bg-sky-900 rounded transition-colors text-slate-600 dark:text-slate-300 hover:text-sky-900 cursor-pointer"
-                      title="Kwafi Lambar Memba (Copy ID)"
+                      title="Copy Membership ID"
                     >
                       <Copy className="w-3.5 h-3.5" />
                     </button>
@@ -360,10 +360,10 @@ Portal Reference: Verified against official database records
                   type="button"
                   onClick={handleCopyFullResult}
                   className="flex-1 inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-[#0A2E73] hover:bg-[#08245a] text-white font-bold text-xs shadow-md transition-all cursor-pointer"
-                  title="Kwafi Cikakken Sakamako"
+                  title="Copy Full Result"
                 >
                   {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
-                  <span>{copied ? 'An Kwafi Sakamako! (Copied!)' : 'Kwafi Sakamakon Tantancewa (Copy Result)'}</span>
+                  <span>{copied ? 'Result Copied!' : 'Copy Verification Result'}</span>
                 </button>
 
                 <div className="flex items-center gap-2">
@@ -371,20 +371,20 @@ Portal Reference: Verified against official database records
                     type="button"
                     onClick={handleCopyIdOnly}
                     className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-4 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 font-bold text-xs transition-colors cursor-pointer"
-                    title="Kwafi Lambar Memba"
+                    title="Copy Membership ID"
                   >
                     <Copy className="w-3.5 h-3.5" />
-                    <span>Kwafi ID</span>
+                    <span>Copy ID</span>
                   </button>
 
                   <button
                     type="button"
                     onClick={() => window.print()}
                     className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs transition-colors cursor-pointer"
-                    title="Buga Takardar Sakamako"
+                    title="Print Verification Result"
                   >
                     <Printer className="w-3.5 h-3.5" />
-                    <span>Buga (Print)</span>
+                    <span>Print Result</span>
                   </button>
                 </div>
               </div>

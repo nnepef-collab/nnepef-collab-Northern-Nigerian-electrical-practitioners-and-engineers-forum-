@@ -22,6 +22,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+firebase-debug.log*
+.build-outputs/
+tsconfig.tsbuildinfo
 
 # Editor directories and files
 .DS_Store

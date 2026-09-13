@@ -102,7 +102,9 @@ export const SuperAdminRenewalManagement: React.FC<SuperAdminRenewalManagementPr
   const handleOpenReviewModal = (req: RenewalRequest) => {
     setActiveRequest(req);
     const today = new Date().toISOString().split('T')[0];
-    const defaultExpiry = new Date(Date.now() + 5 * 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const expDate = new Date();
+    expDate.setFullYear(expDate.getFullYear() + 2);
+    const defaultExpiry = expDate.toISOString().split('T')[0];
 
     setEditForm({
       fullName: req.fullName,

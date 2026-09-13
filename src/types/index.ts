@@ -23,6 +23,14 @@ export interface NextOfKin {
   address: string;
 }
 
+export interface MembershipCardHistoryItem {
+  membershipId: string;
+  issueDate: string;
+  expiryDate: string;
+  renewedAt: string;
+  status: 'expired' | 'renewed';
+}
+
 export interface Member {
   id: string;
   membershipId?: string; // Assigned manually by Admin/Super Admin only
@@ -56,6 +64,8 @@ export interface Member {
   graduationYear?: string;
   otherQualifications?: string;
   professionalCertificates?: string;
+  qualificationDetails?: any;
+  qualification_details?: string | null;
   occupation: string;
   specialization: string;
   membershipType?: string;
@@ -82,6 +92,7 @@ export interface Member {
   rejectedBy?: string;
   rejectionReason?: string;
   nextOfKin?: NextOfKin;
+  previousCards?: MembershipCardHistoryItem[];
 }
 
 export interface Executive {
