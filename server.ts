@@ -200,8 +200,10 @@ async function startServer() {
     return payload;
   }
 
+  const DUPLICATE_REGISTRATION_MESSAGE = 'This NIN or phone number is already registered with N-NEPEF. You cannot submit another membership application.';
+
   // Helper to sync or write member payload directly to Supabase PostgreSQL table public.members
-  async function syncMemberToSupabase(rawMember: any) {
+  async function syncMemberToSupabase(rawMember: any, isRegistration: boolean = true) {
     const effectiveKey = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_KEY;
     if (!SUPABASE_URL || !effectiveKey) {
       return { success: false, error: 'Supabase credentials not available on server' };
@@ -210,59 +212,63 @@ async function startServer() {
     const payload = cleanMemberDbPayload(rawMember);
 
     try {
-      // 1. UNCONDITIONAL DUPLICATE PREVENTION:
-      // Search Supabase PostgreSQL for an existing member record matching Phone, NIN, or Email FIRST.
-      // Unauthenticated clients cannot reliably see pending records due to RLS, so this server-side check is authoritative.
       const rawPhone = payload.phone ? String(payload.phone).trim() : '';
       const digitsOnlyPhone = rawPhone.replace(/\D/g, '');
       const last10Phone = digitsOnlyPhone.length >= 10 ? digitsOnlyPhone.slice(-10) : digitsOnlyPhone;
-
       const cleanNin = payload.nin ? String(payload.nin).replace(/\D/g, '').trim() : '';
-      const cleanEmail = payload.email ? String(payload.email).trim().toLowerCase() : '';
 
-      let existingRow: any = null;
+      // 1. STRICT DUPLICATE PREVENTION FOR NEW REGISTRATIONS
+      // Check Supabase PostgreSQL across ALL member statuses (pending, approved, rejected, suspended).
+      // Uses the server-side service-role key which bypasses RLS and inspects the entire table.
+      if (isRegistration && (cleanNin || last10Phone)) {
+        const orFilters: string[] = [];
+        if (cleanNin && cleanNin.length >= 8) {
+          orFilters.push(`nin.eq.${encodeURIComponent(cleanNin)}`);
+          orFilters.push(`nin_number.eq.${encodeURIComponent(cleanNin)}`);
+        }
+        if (last10Phone && last10Phone.length === 10) {
+          orFilters.push(`phone.eq.${encodeURIComponent('0' + last10Phone)}`);
+          orFilters.push(`phone.eq.${encodeURIComponent('+234' + last10Phone)}`);
+          orFilters.push(`phone.eq.${encodeURIComponent('234' + last10Phone)}`);
+          orFilters.push(`phone.eq.${encodeURIComponent(last10Phone)}`);
+        }
 
-      // UNCONDITIONALLY search by Phone, NIN, or Email FIRST (regardless of payload.id)
-      const orFilters: string[] = [];
-      if (rawPhone) {
-        orFilters.push(`phone.eq.${encodeURIComponent(rawPhone)}`);
-      }
-      if (last10Phone && last10Phone.length === 10) {
-        orFilters.push(`phone.eq.${encodeURIComponent('0' + last10Phone)}`);
-        orFilters.push(`phone.eq.${encodeURIComponent('+234' + last10Phone)}`);
-        orFilters.push(`phone.eq.${encodeURIComponent('234' + last10Phone)}`);
-      }
-      if (cleanNin && cleanNin.length >= 7) {
-        orFilters.push(`nin.eq.${encodeURIComponent(cleanNin)}`);
-      }
-      if (cleanEmail && cleanEmail.includes('@') && !cleanEmail.endsWith('@temp.com')) {
-        orFilters.push(`email.ilike.${encodeURIComponent(cleanEmail)}`);
-      }
+        if (orFilters.length > 0) {
+          try {
+            const checkUrl = `${SUPABASE_URL}/rest/v1/members?or=(${orFilters.join(',')})&select=id,status,nin,phone&limit=1`;
+            const checkRes = await fetch(checkUrl, {
+              headers: {
+                'apikey': effectiveKey,
+                'Authorization': `Bearer ${effectiveKey}`
+              }
+            });
 
-      const uniqueFilters = Array.from(new Set(orFilters));
-
-      if (uniqueFilters.length > 0) {
-        try {
-          const checkRes = await fetch(`${SUPABASE_URL}/rest/v1/members?or=(${uniqueFilters.join(',')})&select=*&order=created_at.asc&limit=1`, {
-            headers: {
-              'apikey': effectiveKey,
-              'Authorization': `Bearer ${effectiveKey}`
+            if (checkRes.ok) {
+              const existingRows = await checkRes.json();
+              if (Array.isArray(existingRows) && existingRows.length > 0) {
+                console.warn('[Duplicate Registration Blocked] Member already exists with status:', existingRows[0].status, 'ID:', existingRows[0].id);
+                return {
+                  success: false,
+                  code: 'DUPLICATE_REGISTRATION',
+                  status: 409,
+                  error: DUPLICATE_REGISTRATION_MESSAGE
+                };
+              }
             }
-          });
-          if (checkRes.ok) {
-            const existingRows = await checkRes.json();
-            if (Array.isArray(existingRows) && existingRows.length > 0 && existingRows[0].id) {
-              existingRow = existingRows[0];
-              console.log('[Supabase Sync] Matched existing member by Phone/NIN/Email to prevent duplicate record. ID:', existingRow.id, 'Phone:', existingRow.phone, 'NIN:', existingRow.nin);
-            }
+          } catch (checkErr) {
+            console.warn('[Supabase Sync Duplicate Check Notice]:', checkErr);
           }
-        } catch (checkErr) {
-          console.warn('[Supabase Sync lookup notice]:', checkErr);
         }
       }
 
-      // If not matched by Phone/NIN/Email, check if payload.id exists in database
-      if (!existingRow && payload.id && !payload.id.startsWith('m-')) {
+      // For new registrations: ALWAYS generate a new UUID. Do not reuse existing records.
+      if (isRegistration) {
+        payload.id = crypto.randomUUID();
+      }
+
+      // For non-registration updates (admin or profile update), find existing record by ID
+      let existingRow: any = null;
+      if (!isRegistration && payload.id && !payload.id.startsWith('m-')) {
         try {
           const idCheckRes = await fetch(`${SUPABASE_URL}/rest/v1/members?id=eq.${encodeURIComponent(payload.id)}&select=*&limit=1`, {
             headers: {
@@ -281,11 +287,10 @@ async function startServer() {
         }
       }
 
-      // C) If an existing record was found, REUSE its ID and PRESERVE populated authentic fields:
-      if (existingRow) {
+      // If updating an existing record, preserve populated fields
+      if (!isRegistration && existingRow) {
         payload.id = existingRow.id;
 
-        // Preserve approved status so re-registration or profile update does not revoke approval
         if (existingRow.status === 'approved') {
           payload.status = 'approved';
         }
@@ -296,19 +301,16 @@ async function startServer() {
           payload.registered_at = existingRow.registered_at;
         }
 
-        // Preserve authentic passport photo if incoming is empty or placeholder
         const isPlaceholderPassport = !payload.passport_url || payload.passport_url.includes('images.unsplash.com');
         if (isPlaceholderPassport && existingRow.passport_url) {
           payload.passport_url = existingRow.passport_url;
         }
 
-        // Preserve authentic payment receipt if incoming is empty or placeholder
         const isPlaceholderReceipt = !payload.payment_receipt_url || payload.payment_receipt_url.includes('images.unsplash.com');
         if (isPlaceholderReceipt && existingRow.payment_receipt_url) {
           payload.payment_receipt_url = existingRow.payment_receipt_url;
         }
 
-        // Preserve and deep-merge qualification_details (School/Education info)
         if (existingRow.qualification_details) {
           try {
             const prevQ = typeof existingRow.qualification_details === 'string' ? JSON.parse(existingRow.qualification_details) : existingRow.qualification_details;
@@ -328,7 +330,6 @@ async function startServer() {
           } catch (e) {}
         }
 
-        // Preserve and deep-merge next of kin details
         if (existingRow.next_of_kin) {
           try {
             const prevN = typeof existingRow.next_of_kin === 'string' ? JSON.parse(existingRow.next_of_kin) : existingRow.next_of_kin;
@@ -352,15 +353,18 @@ async function startServer() {
         payload.id = crypto.randomUUID();
       }
 
-      // 2. Authoritative direct atomic UPSERT to Supabase PostgreSQL table public.members
-      // This preserves ALL fields in a single atomic transaction: photos, education info, next of kin!
+      // 2. Authoritative direct write to Supabase PostgreSQL table public.members
+      const preferHeader = isRegistration
+        ? 'return=representation'
+        : 'resolution=merge-duplicates,return=representation';
+
       const response = await fetch(`${SUPABASE_URL}/rest/v1/members`, {
         method: 'POST',
         headers: {
           'apikey': effectiveKey,
           'Authorization': `Bearer ${effectiveKey}`,
           'Content-Type': 'application/json',
-          'Prefer': 'resolution=merge-duplicates,return=representation'
+          'Prefer': preferHeader
         },
         body: JSON.stringify(payload)
       });
@@ -368,12 +372,39 @@ async function startServer() {
       if (response.status === 201 || response.status === 200) {
         const savedRows = await response.json().catch(() => [payload]);
         const savedRow = Array.isArray(savedRows) && savedRows[0] ? savedRows[0] : payload;
-        console.log('[Supabase PostgreSQL UPSERT Success] Saved single record for:', savedRow.id, savedRow.full_name);
+        console.log('[Supabase PostgreSQL Insert/Upsert Success] Saved single record for:', savedRow.id, savedRow.full_name);
         return { success: true, status: response.status, member: savedRow };
       }
 
-      // 3. If standard upsert returned 204 or conflict, execute targeted PATCH on id
-      if (payload.id) {
+      // 3. Handle conflict (HTTP 409) - e.g. unique constraint violation on NIN or phone
+      if (response.status === 409) {
+        const conflictText = await response.text().catch(() => '');
+        if (
+          conflictText.includes('23505') ||
+          conflictText.includes('unique') ||
+          conflictText.includes('duplicate') ||
+          conflictText.includes('nin') ||
+          conflictText.includes('phone')
+        ) {
+          return {
+            success: false,
+            code: 'DUPLICATE_REGISTRATION',
+            status: 409,
+            error: DUPLICATE_REGISTRATION_MESSAGE
+          };
+        }
+        if (isRegistration) {
+          return {
+            success: false,
+            code: 'DUPLICATE_REGISTRATION',
+            status: 409,
+            error: DUPLICATE_REGISTRATION_MESSAGE
+          };
+        }
+      }
+
+      // 4. If updating existing non-registration record and upsert returned 204, execute targeted PATCH
+      if (!isRegistration && payload.id) {
         const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/members?id=eq.${encodeURIComponent(payload.id)}`, {
           method: 'PATCH',
           headers: {
@@ -665,6 +696,122 @@ async function startServer() {
     }
   });
 
+  // GET /api/members/check-duplicate - Fast duplicate check for NIN and Phone across all member statuses
+  app.get('/api/members/check-duplicate', async (req, res) => {
+    try {
+      const nin = req.query.nin ? String(req.query.nin).replace(/\D/g, '').trim() : '';
+      const rawPhone = req.query.phone ? String(req.query.phone).trim() : '';
+      const phoneDigits = rawPhone.replace(/\D/g, '');
+      const core10 = phoneDigits.length >= 10 ? phoneDigits.slice(-10) : '';
+
+      if (!nin && !core10) {
+        return res.json({ isDuplicate: false });
+      }
+
+      const effectiveKey = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_KEY;
+      if (!SUPABASE_URL || !effectiveKey) {
+        return res.json({ isDuplicate: false });
+      }
+
+      const orFilters: string[] = [];
+      if (nin && nin.length >= 8) {
+        orFilters.push(`nin.eq.${encodeURIComponent(nin)}`);
+        orFilters.push(`nin_number.eq.${encodeURIComponent(nin)}`);
+      }
+      if (core10 && core10.length === 10) {
+        orFilters.push(`phone.eq.${encodeURIComponent('0' + core10)}`);
+        orFilters.push(`phone.eq.${encodeURIComponent('+234' + core10)}`);
+        orFilters.push(`phone.eq.${encodeURIComponent('234' + core10)}`);
+        orFilters.push(`phone.eq.${encodeURIComponent(core10)}`);
+      }
+
+      if (orFilters.length === 0) {
+        return res.json({ isDuplicate: false });
+      }
+
+      const url = `${SUPABASE_URL}/rest/v1/members?or=(${orFilters.join(',')})&select=id,status,nin,phone&limit=1`;
+      const response = await fetch(url, {
+        headers: {
+          'apikey': effectiveKey,
+          'Authorization': `Bearer ${effectiveKey}`
+        }
+      });
+
+      if (response.ok) {
+        const rows = await response.json();
+        if (Array.isArray(rows) && rows.length > 0) {
+          return res.json({
+            isDuplicate: true,
+            status: rows[0].status,
+            error: 'This NIN or phone number is already registered with N-NEPEF. You cannot submit another membership application.'
+          });
+        }
+      }
+
+      return res.json({ isDuplicate: false });
+    } catch (err: any) {
+      return res.status(500).json({ isDuplicate: false, error: err.message });
+    }
+  });
+
+  // POST /api/members/check-duplicate - Check duplicate via POST body
+  app.post('/api/members/check-duplicate', async (req, res) => {
+    try {
+      const nin = req.body.nin ? String(req.body.nin).replace(/\D/g, '').trim() : '';
+      const rawPhone = req.body.phone ? String(req.body.phone).trim() : '';
+      const phoneDigits = rawPhone.replace(/\D/g, '');
+      const core10 = phoneDigits.length >= 10 ? phoneDigits.slice(-10) : '';
+
+      if (!nin && !core10) {
+        return res.json({ isDuplicate: false });
+      }
+
+      const effectiveKey = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_KEY;
+      if (!SUPABASE_URL || !effectiveKey) {
+        return res.json({ isDuplicate: false });
+      }
+
+      const orFilters: string[] = [];
+      if (nin && nin.length >= 8) {
+        orFilters.push(`nin.eq.${encodeURIComponent(nin)}`);
+        orFilters.push(`nin_number.eq.${encodeURIComponent(nin)}`);
+      }
+      if (core10 && core10.length === 10) {
+        orFilters.push(`phone.eq.${encodeURIComponent('0' + core10)}`);
+        orFilters.push(`phone.eq.${encodeURIComponent('+234' + core10)}`);
+        orFilters.push(`phone.eq.${encodeURIComponent('234' + core10)}`);
+        orFilters.push(`phone.eq.${encodeURIComponent(core10)}`);
+      }
+
+      if (orFilters.length === 0) {
+        return res.json({ isDuplicate: false });
+      }
+
+      const url = `${SUPABASE_URL}/rest/v1/members?or=(${orFilters.join(',')})&select=id,status,nin,phone&limit=1`;
+      const response = await fetch(url, {
+        headers: {
+          'apikey': effectiveKey,
+          'Authorization': `Bearer ${effectiveKey}`
+        }
+      });
+
+      if (response.ok) {
+        const rows = await response.json();
+        if (Array.isArray(rows) && rows.length > 0) {
+          return res.json({
+            isDuplicate: true,
+            status: rows[0].status,
+            error: 'This NIN or phone number is already registered with N-NEPEF. You cannot submit another membership application.'
+          });
+        }
+      }
+
+      return res.json({ isDuplicate: false });
+    } catch (err: any) {
+      return res.status(500).json({ isDuplicate: false, error: err.message });
+    }
+  });
+
   // POST /api/members - Register or save new member to Supabase PostgreSQL
   app.post('/api/members', async (req, res) => {
     try {
@@ -675,7 +822,8 @@ async function startServer() {
       }
 
       // Authoritative sync directly to Supabase PostgreSQL table public.members
-      const supabaseResult = await syncMemberToSupabase(member);
+      // isRegistration = true strictly checks for duplicate NIN or Phone across all statuses
+      const supabaseResult = await syncMemberToSupabase(member, true);
 
       if (supabaseResult.success) {
         const finalMember = supabaseResult.member || member;
@@ -683,6 +831,13 @@ async function startServer() {
           success: true,
           message: 'Member registered successfully to Supabase PostgreSQL database',
           member: finalMember,
+          supabaseResult
+        });
+      } else if (supabaseResult.code === 'DUPLICATE_REGISTRATION' || supabaseResult.status === 409) {
+        return res.status(409).json({
+          success: false,
+          code: 'DUPLICATE_REGISTRATION',
+          error: supabaseResult.error || 'This NIN or phone number is already registered with N-NEPEF. You cannot submit another membership application.',
           supabaseResult
         });
       } else {

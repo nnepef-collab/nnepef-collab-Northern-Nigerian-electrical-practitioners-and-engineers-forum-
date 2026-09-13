@@ -4,6 +4,8 @@ import { NORTHERN_STATES, SPECIALIZATIONS } from '../data/initialData';
 import { DualImageUpload } from './DualImageUpload';
 import { generateUUID } from '../utils/uuid';
 import { downloadMemberProfilePdf } from '../services/pdfService';
+import { checkMemberDuplicateInSupabase, DUPLICATE_REGISTRATION_MESSAGE } from '../services/supabaseService';
+import { normalizeNin, normalizePhone, isValidNin, isValidPhone } from '../utils/memberHelpers';
 import { 
   User, 
   Phone, 
@@ -204,30 +206,51 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
       return;
     }
 
-    if (!formData.nin || !formData.nin.trim()) {
-      setValidationError('National Identification Number (NIN) is required for verified practitioners.');
+    const cleanNin = normalizeNin(formData.nin);
+    if (!cleanNin || !isValidNin(cleanNin)) {
+      setValidationError('Please enter a valid 11-digit National Identification Number (NIN).');
+      return;
+    }
+
+    const cleanPhone = normalizePhone(formData.phone);
+    if (!cleanPhone || !isValidPhone(formData.phone)) {
+      setValidationError('Please enter a valid primary phone number (e.g. 0803 123 4567).');
       return;
     }
 
     setIsSubmitting(true);
+    setValidationError(null);
 
     try {
+      // 1. Authoritative pre-check against Supabase database for duplicate NIN or Phone across all member statuses
+      const dupCheck = await checkMemberDuplicateInSupabase({ nin: cleanNin, phone: cleanPhone });
+      if (dupCheck.isDuplicate) {
+        setValidationError(DUPLICATE_REGISTRATION_MESSAGE);
+        setIsSubmitting(false);
+        return;
+      }
+
+      // Also check local loaded members in memory
+      const hasDuplicateInCache = members?.some(m => {
+        const mNin = normalizeNin(m.nin || m.ninNumber);
+        const mPhone = normalizePhone(m.phone);
+        return (cleanNin && mNin === cleanNin) || (cleanPhone && mPhone === cleanPhone);
+      });
+      if (hasDuplicateInCache) {
+        setValidationError(DUPLICATE_REGISTRATION_MESSAGE);
+        setIsSubmitting(false);
+        return;
+      }
+
       const defaultPassport = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=400';
       const defaultReceipt = 'https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?auto=format&fit=crop&q=80&w=600';
 
-      const cleanPhone = formData.phone.trim();
-      const cleanNin = formData.nin.trim();
-      const existingMember = members?.find(m => 
-        (cleanPhone && m.phone && m.phone.trim() === cleanPhone) ||
-        (cleanNin && m.nin && m.nin.trim() === cleanNin)
-      );
-
-      const memberId = existingMember ? existingMember.id : (sessionRegistrationId || generateUUID());
+      const memberId = sessionRegistrationId || generateUUID();
       if (!sessionRegistrationId && memberId) {
         setSessionRegistrationId(memberId);
       }
       const refSuffix = Math.floor(100000 + Math.random() * 900000);
-      const appRef = existingMember?.applicationReference || `APP-${new Date().getFullYear()}-${refSuffix}`;
+      const appRef = `APP-${new Date().getFullYear()}-${refSuffix}`;
 
       const newMember: Member = {
         id: memberId,
@@ -237,12 +260,12 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
         gender: formData.gender,
         dob: formData.dob,
         dateOfBirth: formData.dob,
-        phone: formData.phone.trim(),
-        altPhone: formData.altPhone?.trim() || undefined,
-        alternativePhone: formData.altPhone?.trim() || undefined,
+        phone: cleanPhone,
+        altPhone: formData.altPhone ? normalizePhone(formData.altPhone) : undefined,
+        alternativePhone: formData.altPhone ? normalizePhone(formData.altPhone) : undefined,
         nationality: formData.nationality?.trim() || 'Nigerian',
-        nin: formData.nin.trim(),
-        ninNumber: formData.nin.trim(),
+        nin: cleanNin,
+        ninNumber: cleanNin,
         otherIdType: formData.otherIdType,
         otherIdNumber: formData.otherIdNumber?.trim() || undefined,
         state: formData.state,
@@ -269,8 +292,8 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
         nextOfKin: {
           name: formData.nextOfKin.name.trim(),
           relation: formData.nextOfKin.relation,
-          phone: formData.nextOfKin.phone.trim(),
-          altPhone: formData.nextOfKin.altPhone?.trim() || undefined,
+          phone: normalizePhone(formData.nextOfKin.phone),
+          altPhone: formData.nextOfKin.altPhone ? normalizePhone(formData.nextOfKin.altPhone) : undefined,
           address: formData.nextOfKin.address.trim()
         },
         status: 'pending',
@@ -292,7 +315,18 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
       setSubmittedMember(confirmed);
     } catch (err: any) {
       console.error('[MemberRegistration] Submission error:', err);
-      setValidationError(err?.message || 'Failed to submit registration. Please verify database connection and retry.');
+      const errMsg = String(err?.message || '');
+      if (
+        errMsg.includes('already registered') ||
+        errMsg.includes('DUPLICATE') ||
+        errMsg.includes('23505') ||
+        errMsg.includes('duplicate key') ||
+        errMsg.includes('unique')
+      ) {
+        setValidationError(DUPLICATE_REGISTRATION_MESSAGE);
+      } else {
+        setValidationError(err?.message || 'Failed to submit registration. Please verify database connection and retry.');
+      }
     } finally {
       setIsSubmitting(false);
     }

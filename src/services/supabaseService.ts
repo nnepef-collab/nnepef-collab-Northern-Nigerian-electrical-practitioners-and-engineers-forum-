@@ -76,8 +76,28 @@ import {
   saveLocalCMSFiles
 } from './localDatabaseService';
 import { generateUUID } from '../utils/uuid';
-import { parseNextOfKin, parseEducationDetails, safeMergeMember } from '../utils/memberHelpers';
-export { parseNextOfKin, parseEducationDetails, safeMergeMember };
+import { 
+  parseNextOfKin, 
+  parseEducationDetails, 
+  safeMergeMember,
+  normalizeNin,
+  normalizePhone,
+  getPhoneCore10,
+  isValidNin,
+  isValidPhone,
+  getPhoneLookupVariations
+} from '../utils/memberHelpers';
+export { 
+  parseNextOfKin, 
+  parseEducationDetails, 
+  safeMergeMember,
+  normalizeNin,
+  normalizePhone,
+  getPhoneCore10,
+  isValidNin,
+  isValidPhone,
+  getPhoneLookupVariations
+};
 
 /**
  * Resolves API path for both browser and server/test environments
@@ -781,9 +801,101 @@ export function subscribeToMembers(callback: (members: Member[]) => void) {
   };
 }
 
+export const DUPLICATE_REGISTRATION_MESSAGE = 'This NIN or phone number is already registered with N-NEPEF. You cannot submit another membership application.';
+
+/**
+ * Checks whether a member with the given NIN or Phone number already exists in Supabase.
+ * Enforces one-person-one-membership across ALL member statuses (pending, approved, rejected, suspended).
+ */
+export async function checkMemberDuplicateInSupabase(params: { nin?: string; phone?: string }): Promise<{ isDuplicate: boolean; reason?: string }> {
+  const cleanNin = normalizeNin(params.nin);
+  const cleanPhone = normalizePhone(params.phone);
+
+  if (!cleanNin && !cleanPhone) {
+    return { isDuplicate: false };
+  }
+
+  // 1. Authoritative check via Server API /api/members/check-duplicate (using service-role across all statuses)
+  try {
+    const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+    const url = new URL(getApiEndpoint('/api/members/check-duplicate'), origin);
+    if (cleanNin) url.searchParams.set('nin', cleanNin);
+    if (cleanPhone) url.searchParams.set('phone', cleanPhone);
+    const res = await fetch(url.toString(), {
+      method: 'GET',
+      headers: getApiHeaders()
+    });
+    if (res.ok) {
+      const data = await res.json().catch(() => null);
+      if (data && data.isDuplicate) {
+        return { isDuplicate: true, reason: DUPLICATE_REGISTRATION_MESSAGE };
+      }
+    }
+  } catch (e) {
+    // Non-blocking fallback to Supabase RPC / query
+  }
+
+  // 2. Secondary check via Supabase RPC (SECURITY DEFINER runs across all member statuses)
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase.rpc('check_member_duplicate', {
+        p_nin: cleanNin || null,
+        p_phone: cleanPhone || null
+      });
+      if (!error && data && (data.is_duplicate || data.isDuplicate)) {
+        return { isDuplicate: true, reason: DUPLICATE_REGISTRATION_MESSAGE };
+      }
+    } catch (rpcErr) {
+      // Non-blocking fallback to direct query
+    }
+
+    // 3. Client-side query check
+    try {
+      const orClauses: string[] = [];
+      if (cleanNin) {
+        orClauses.push(`nin.eq.${cleanNin}`);
+        orClauses.push(`nin_number.eq.${cleanNin}`);
+      }
+      if (cleanPhone) {
+        const phoneVariations = getPhoneLookupVariations(cleanPhone);
+        for (const v of phoneVariations) {
+          orClauses.push(`phone.eq.${v}`);
+        }
+      }
+      if (orClauses.length > 0) {
+        const { data: matchedRows } = await supabase
+          .from('members')
+          .select('id, nin, phone, status')
+          .or(orClauses.join(','))
+          .limit(1);
+
+        if (matchedRows && matchedRows.length > 0) {
+          return { isDuplicate: true, reason: DUPLICATE_REGISTRATION_MESSAGE };
+        }
+      }
+    } catch (clientErr) {
+      // Proceed to server/RPC write where database constraints will guarantee enforcement
+    }
+  }
+
+  return { isDuplicate: false };
+}
+
 export async function saveMemberToSupabase(member: Member): Promise<Member> {
   const memberId = member.id || generateUUID();
   member.id = memberId;
+
+  // Normalize NIN and phone numbers
+  const normalizedNin = normalizeNin(member.nin || member.ninNumber);
+  const normalizedPhone = normalizePhone(member.phone);
+
+  // STRICT PRE-CHECK: Reject duplicate registrations before executing writes
+  if (normalizedNin || normalizedPhone) {
+    const dupCheck = await checkMemberDuplicateInSupabase({ nin: normalizedNin, phone: normalizedPhone });
+    if (dupCheck.isDuplicate) {
+      throw new Error(DUPLICATE_REGISTRATION_MESSAGE);
+    }
+  }
 
   // Safely ensure membership ID or reference is formatted
   let finalMembershipId = member.membershipId ? member.membershipId.trim() : '';
@@ -799,7 +911,7 @@ export async function saveMemberToSupabase(member: Member): Promise<Member> {
   const educationDetails = parseEducationDetails(member);
 
   // Package next of kin cleanly using standard parser so next of kin info is NEVER lost
-  const nextOfKinObj = parseNextOfKin(member.nextOfKin, member.phone);
+  const nextOfKinObj = parseNextOfKin(member.nextOfKin, normalizedPhone);
 
   // Construct clean database payload strictly matching public.members table columns
   const dbPayload: Record<string, any> = {
@@ -807,9 +919,10 @@ export async function saveMemberToSupabase(member: Member): Promise<Member> {
     full_name: (member.fullName || '').trim(),
     gender: member.gender || 'Male',
     date_of_birth: member.dob || member.dateOfBirth || null,
-    phone: member.phone ? String(member.phone).trim() : null,
+    phone: normalizedPhone || null,
     email: member.email ? String(member.email).trim().toLowerCase() : null,
-    nin: member.nin ? String(member.nin).trim() : (member.ninNumber ? String(member.ninNumber).trim() : null),
+    nin: normalizedNin || null,
+    nin_number: normalizedNin || null,
     state: member.state || 'Kano',
     lga: member.lga || 'Kano Municipal',
     residential_address: member.residentialAddress || member.address || null,
@@ -840,6 +953,9 @@ export async function saveMemberToSupabase(member: Member): Promise<Member> {
   const cleanMember: Member = {
     ...member,
     id: memberId,
+    phone: normalizedPhone,
+    nin: normalizedNin,
+    ninNumber: normalizedNin,
     membershipId: finalMembershipId || '',
     verificationCode: verCode,
     applicationReference: appRef,
@@ -856,13 +972,17 @@ export async function saveMemberToSupabase(member: Member): Promise<Member> {
   let saveErrorMessage = '';
 
   // 1. Primary write: Server-side API endpoint (/api/members)
-  // This executes an atomic PostgreSQL upsert using the authoritative SUPABASE_SERVICE_ROLE_KEY
   try {
     const apiRes = await fetch(getApiEndpoint('/api/members'), {
       method: 'POST',
       headers: getApiHeaders(),
       body: JSON.stringify(cleanMember)
     });
+
+    if (apiRes.status === 409) {
+      throw new Error(DUPLICATE_REGISTRATION_MESSAGE);
+    }
+
     if (apiRes.ok) {
       const json = await apiRes.json().catch(() => null);
       if (json && json.success && json.member) {
@@ -870,54 +990,64 @@ export async function saveMemberToSupabase(member: Member): Promise<Member> {
       }
     } else {
       const errData = await apiRes.json().catch(() => null);
-      if (errData && errData.error) {
-        saveErrorMessage = errData.error;
+      if (errData && (errData.code === 'DUPLICATE_REGISTRATION' || (errData.error && errData.error.includes('already registered')))) {
+        throw new Error(DUPLICATE_REGISTRATION_MESSAGE);
       }
+      saveErrorMessage = errData?.error || '';
     }
   } catch (apiErr: any) {
+    if (apiErr?.message === DUPLICATE_REGISTRATION_MESSAGE) {
+      throw apiErr;
+    }
     saveErrorMessage = apiErr?.message || '';
   }
 
-  // 2. Fallback: Direct Supabase PostgreSQL table upsert via client SDK
+  // 2. Fallback: Direct Supabase PostgreSQL table insert or RPC via client SDK
   if (!savedMemberRecord && isSupabaseConfigured()) {
     try {
-      // Direct duplicate check prior to upsert if ID is generated
-      const cleanPhone = cleanMember.phone ? String(cleanMember.phone).trim() : null;
-      const cleanNin = cleanMember.nin ? String(cleanMember.nin).trim() : null;
-      if (cleanPhone || cleanNin) {
-        let query = supabase.from('members').select('*');
-        if (cleanPhone && cleanNin) {
-          query = query.or(`phone.eq.${cleanPhone},nin.eq.${cleanNin}`);
-        } else if (cleanPhone) {
-          query = query.eq('phone', cleanPhone);
-        } else if (cleanNin) {
-          query = query.eq('nin', cleanNin);
-        }
-        const { data: existingRows } = await query.limit(1);
-        if (existingRows && existingRows.length > 0) {
-          dbPayload.id = existingRows[0].id;
-          cleanMember.id = existingRows[0].id;
+      // 2a. Attempt secure registration RPC
+      const { data: rpcData, error: rpcError } = await supabase.rpc('public_register_member', {
+        p_payload: dbPayload
+      });
+
+      if (!rpcError && rpcData) {
+        if (rpcData.success && rpcData.member) {
+          savedMemberRecord = safeMergeMember(cleanMember, mapSupabaseRowToMember(rpcData.member));
+        } else if (rpcData.code === 'DUPLICATE_REGISTRATION' || (rpcData.error && rpcData.error.includes('already registered'))) {
+          throw new Error(DUPLICATE_REGISTRATION_MESSAGE);
         }
       }
 
-      const { data, error } = await supabase
-        .from('members')
-        .upsert(dbPayload, { onConflict: 'id' })
-        .select()
-        .maybeSingle();
+      // 2b. If RPC unavailable, attempt direct INSERT (NOT upsert to ensure duplicate keys fail safely)
+      if (!savedMemberRecord) {
+        const { data, error } = await supabase
+          .from('members')
+          .insert(dbPayload)
+          .select()
+          .maybeSingle();
 
-      if (!error && data) {
-        savedMemberRecord = safeMergeMember(cleanMember, mapSupabaseRowToMember(data));
-      } else if (error) {
-        saveErrorMessage = error.message;
+        if (!error && data) {
+          savedMemberRecord = safeMergeMember(cleanMember, mapSupabaseRowToMember(data));
+        } else if (error) {
+          if (error.code === '23505' || error.message?.includes('already registered') || error.message?.includes('duplicate key') || error.message?.includes('unique')) {
+            throw new Error(DUPLICATE_REGISTRATION_MESSAGE);
+          }
+          saveErrorMessage = error.message;
+        }
       }
     } catch (clientErr: any) {
+      if (clientErr?.message === DUPLICATE_REGISTRATION_MESSAGE) {
+        throw clientErr;
+      }
       saveErrorMessage = clientErr?.message || String(clientErr);
     }
   }
 
   // If neither method succeeded, throw informative error
   if (!savedMemberRecord) {
+    if (saveErrorMessage && saveErrorMessage.includes('already registered')) {
+      throw new Error(DUPLICATE_REGISTRATION_MESSAGE);
+    }
     if (!isSupabaseConfigured()) {
       throw new Error('Supabase database is not configured. Please ensure VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY are set.');
     }

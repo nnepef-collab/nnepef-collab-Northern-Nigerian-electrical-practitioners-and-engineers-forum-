@@ -107,8 +107,51 @@ export default async function handler(req: any, res: any) {
         updated_at: new Date().toISOString()
       };
 
+      const cleanPhone = payload.phone ? String(payload.phone).trim() : '';
+      const phoneDigits = cleanPhone.replace(/\D/g, '');
+      const core10 = phoneDigits.length >= 10 ? phoneDigits.slice(-10) : '';
+      const cleanNin = payload.nin ? String(payload.nin).replace(/\D/g, '').trim() : '';
+
       if (!SUPABASE_URL || !SUPABASE_KEY) {
         return res.status(500).json({ success: false, error: 'Supabase credentials not configured on server' });
+      }
+
+      const DUPLICATE_MSG = 'This NIN or phone number is already registered with N-NEPEF. You cannot submit another membership application.';
+
+      // Pre-check for duplicate NIN or Phone across all member statuses
+      if (cleanNin || core10) {
+        const orFilters: string[] = [];
+        if (cleanNin && cleanNin.length >= 8) {
+          orFilters.push(`nin.eq.${encodeURIComponent(cleanNin)}`);
+          orFilters.push(`nin_number.eq.${encodeURIComponent(cleanNin)}`);
+        }
+        if (core10 && core10.length === 10) {
+          orFilters.push(`phone.eq.${encodeURIComponent('0' + core10)}`);
+          orFilters.push(`phone.eq.${encodeURIComponent('+234' + core10)}`);
+          orFilters.push(`phone.eq.${encodeURIComponent('234' + core10)}`);
+          orFilters.push(`phone.eq.${encodeURIComponent(core10)}`);
+        }
+
+        if (orFilters.length > 0) {
+          try {
+            const checkRes = await fetch(`${SUPABASE_URL}/rest/v1/members?or=(${orFilters.join(',')})&select=id,status,nin,phone&limit=1`, {
+              headers: {
+                'apikey': SUPABASE_KEY,
+                'Authorization': `Bearer ${SUPABASE_KEY}`
+              }
+            });
+            if (checkRes.ok) {
+              const rows = await checkRes.json();
+              if (Array.isArray(rows) && rows.length > 0) {
+                return res.status(409).json({
+                  success: false,
+                  code: 'DUPLICATE_REGISTRATION',
+                  error: DUPLICATE_MSG
+                });
+              }
+            }
+          } catch (chkErr) {}
+        }
       }
 
       const response = await fetch(`${SUPABASE_URL}/rest/v1/members`, {
@@ -131,22 +174,11 @@ export default async function handler(req: any, res: any) {
       }
 
       if (response.status === 409) {
-        const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/members?id=eq.${encodeURIComponent(payload.id)}`, {
-          method: 'PATCH',
-          headers: {
-            'apikey': SUPABASE_KEY,
-            'Authorization': `Bearer ${SUPABASE_KEY}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(payload)
+        return res.status(409).json({
+          success: false,
+          code: 'DUPLICATE_REGISTRATION',
+          error: DUPLICATE_MSG
         });
-        if (patchRes.ok) {
-          return res.status(200).json({
-            success: true,
-            message: 'Member updated successfully in Supabase PostgreSQL',
-            member
-          });
-        }
       }
 
       // Try RPC public_register_member fallback
@@ -161,15 +193,42 @@ export default async function handler(req: any, res: any) {
           body: JSON.stringify({ p_payload: payload })
         });
         if (rpcRes.ok) {
+          const rpcData = await rpcRes.json().catch(() => null);
+          if (rpcData && (rpcData.code === 'DUPLICATE_REGISTRATION' || (rpcData.error && rpcData.error.includes('already registered')))) {
+            return res.status(409).json({
+              success: false,
+              code: 'DUPLICATE_REGISTRATION',
+              error: DUPLICATE_MSG
+            });
+          }
           return res.status(201).json({
             success: true,
             message: 'Member registered successfully to Supabase PostgreSQL',
             member
           });
+        } else if (rpcRes.status === 409) {
+          return res.status(409).json({
+            success: false,
+            code: 'DUPLICATE_REGISTRATION',
+            error: DUPLICATE_MSG
+          });
         }
       } catch (rpcErr) {}
 
       const errorText = await response.text();
+      if (
+        errorText.includes('23505') ||
+        errorText.includes('unique') ||
+        errorText.includes('duplicate') ||
+        errorText.includes('nin') ||
+        errorText.includes('phone')
+      ) {
+        return res.status(409).json({
+          success: false,
+          code: 'DUPLICATE_REGISTRATION',
+          error: DUPLICATE_MSG
+        });
+      }
       return res.status(response.status || 500).json({ success: false, error: errorText });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err.message });

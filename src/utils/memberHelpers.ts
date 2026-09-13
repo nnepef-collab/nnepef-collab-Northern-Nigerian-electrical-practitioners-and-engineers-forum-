@@ -177,3 +177,77 @@ export function safeMergeMember(prev: Member, incoming: Partial<Member> | null |
 
   return merged;
 }
+
+/**
+ * Normalizes National Identity Number (NIN):
+ * - Removes all non-digit characters (spaces, hyphens, punctuation)
+ * - Trims whitespace
+ */
+export function normalizeNin(rawNin: any): string {
+  if (!rawNin) return '';
+  return String(rawNin).replace(/\D/g, '').trim();
+}
+
+/**
+ * Validates whether a given NIN is an 11-digit number.
+ */
+export function isValidNin(rawNin: any): boolean {
+  const norm = normalizeNin(rawNin);
+  return norm.length === 11;
+}
+
+/**
+ * Normalizes Nigerian phone numbers to standard 11-digit local format:
+ * - Strips non-digit characters (spaces, hyphens, brackets, '+')
+ * - Maps +234XXXXXXXXXX, 234XXXXXXXXXX, 0XXXXXXXXXX, or XXXXXXXXXX to 0XXXXXXXXXX
+ */
+export function normalizePhone(rawPhone: any): string {
+  if (!rawPhone) return '';
+  const digits = String(rawPhone).replace(/\D/g, '').trim();
+  if (!digits) return '';
+
+  if (digits.length >= 10) {
+    const last10 = digits.slice(-10);
+    return `0${last10}`;
+  }
+  return digits;
+}
+
+/**
+ * Returns the 10-digit core identifier of a Nigerian phone number for database matching.
+ */
+export function getPhoneCore10(rawPhone: any): string {
+  if (!rawPhone) return '';
+  const digits = String(rawPhone).replace(/\D/g, '').trim();
+  if (digits.length >= 10) {
+    return digits.slice(-10);
+  }
+  return digits;
+}
+
+/**
+ * Validates whether a phone number has at least 10 digits and at most 14 digits.
+ */
+export function isValidPhone(rawPhone: any): boolean {
+  const digits = String(rawPhone || '').replace(/\D/g, '').trim();
+  return digits.length >= 10 && digits.length <= 14;
+}
+
+/**
+ * Generates all equivalent Nigerian phone number representations for broad matching
+ * across legacy data formats (+234..., 234..., 0..., 10-digit...).
+ */
+export function getPhoneLookupVariations(rawPhone: any): string[] {
+  if (!rawPhone) return [];
+  const digits = String(rawPhone).replace(/\D/g, '').trim();
+  if (digits.length < 10) {
+    return digits ? [digits] : [];
+  }
+  const last10 = digits.slice(-10);
+  return [
+    `0${last10}`,
+    `+234${last10}`,
+    `234${last10}`,
+    last10
+  ];
+}

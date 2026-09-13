@@ -754,6 +754,36 @@ BEGIN
   v_receipt_url := COALESCE(p_payload->>'payment_receipt_url', p_payload->>'paymentReceiptUrl', '');
   v_nok := COALESCE(p_payload->'next_of_kin', p_payload->'nextOfKin', '{}'::JSONB);
 
+  -- Strict duplicate prevention: check whether NIN or Phone already exists across any member status
+  IF v_nin IS NOT NULL AND length(REGEXP_REPLACE(v_nin, '\D', '', 'g')) >= 7 THEN
+    IF EXISTS (
+      SELECT 1 FROM public.members 
+      WHERE (nin = v_nin OR nin_number = v_nin OR REGEXP_REPLACE(nin, '\D', '', 'g') = REGEXP_REPLACE(v_nin, '\D', '', 'g'))
+    ) THEN
+      RETURN jsonb_build_object(
+        'success', false,
+        'code', 'DUPLICATE_REGISTRATION',
+        'error', 'This NIN or phone number is already registered with N-NEPEF. You cannot submit another membership application.'
+      );
+    END IF;
+  END IF;
+
+  IF v_phone IS NOT NULL AND length(REGEXP_REPLACE(v_phone, '\D', '', 'g')) >= 8 THEN
+    IF EXISTS (
+      SELECT 1 FROM public.members 
+      WHERE (
+        phone = v_phone 
+        OR (length(REGEXP_REPLACE(phone, '\D', '', 'g')) >= 10 AND length(REGEXP_REPLACE(v_phone, '\D', '', 'g')) >= 10 AND RIGHT(REGEXP_REPLACE(phone, '\D', '', 'g'), 10) = RIGHT(REGEXP_REPLACE(v_phone, '\D', '', 'g'), 10))
+      )
+    ) THEN
+      RETURN jsonb_build_object(
+        'success', false,
+        'code', 'DUPLICATE_REGISTRATION',
+        'error', 'This NIN or phone number is already registered with N-NEPEF. You cannot submit another membership application.'
+      );
+    END IF;
+  END IF;
+
   INSERT INTO public.members (
     id,
     membership_id,
@@ -830,10 +860,73 @@ BEGIN
     'member', to_jsonb(v_new_member)
   );
 EXCEPTION
+  WHEN unique_violation THEN
+    RETURN jsonb_build_object(
+      'success', false,
+      'code', 'DUPLICATE_REGISTRATION',
+      'error', 'This NIN or phone number is already registered with N-NEPEF. You cannot submit another membership application.'
+    );
   WHEN OTHERS THEN
     RETURN jsonb_build_object('success', false, 'error', SQLERRM);
 END;
 $$;
+
+-- Function: check_member_duplicate
+CREATE OR REPLACE FUNCTION public.check_member_duplicate(p_nin TEXT, p_phone TEXT)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_clean_nin TEXT;
+  v_clean_phone TEXT;
+  v_phone_digits TEXT;
+  v_last_10 TEXT;
+  v_exists BOOLEAN := false;
+  v_matched_status TEXT;
+BEGIN
+  v_clean_nin := NULLIF(REGEXP_REPLACE(COALESCE(p_nin, ''), '\D', '', 'g'), '');
+  v_clean_phone := NULLIF(TRIM(COALESCE(p_phone, '')), '');
+  v_phone_digits := REGEXP_REPLACE(COALESCE(p_phone, ''), '\D', '', 'g');
+  IF length(v_phone_digits) >= 10 THEN
+    v_last_10 := RIGHT(v_phone_digits, 10);
+  END IF;
+
+  IF v_clean_nin IS NOT NULL AND length(v_clean_nin) >= 7 THEN
+    SELECT status INTO v_matched_status
+    FROM public.members
+    WHERE nin = v_clean_nin OR nin_number = v_clean_nin OR REGEXP_REPLACE(nin, '\D', '', 'g') = v_clean_nin
+    LIMIT 1;
+    IF FOUND THEN
+      v_exists := true;
+    END IF;
+  END IF;
+
+  IF NOT v_exists AND v_last_10 IS NOT NULL THEN
+    SELECT status INTO v_matched_status
+    FROM public.members
+    WHERE phone = v_clean_phone 
+       OR (length(REGEXP_REPLACE(phone, '\D', '', 'g')) >= 10 AND RIGHT(REGEXP_REPLACE(phone, '\D', '', 'g'), 10) = v_last_10)
+    LIMIT 1;
+    IF FOUND THEN
+      v_exists := true;
+    END IF;
+  END IF;
+
+  IF v_exists THEN
+    RETURN jsonb_build_object(
+      'is_duplicate', true,
+      'status', v_matched_status,
+      'error', 'This NIN or phone number is already registered with N-NEPEF. You cannot submit another membership application.'
+    );
+  ELSE
+    RETURN jsonb_build_object('is_duplicate', false);
+  END IF;
+END;
+$$;
+GRANT EXECUTE ON FUNCTION public.check_member_duplicate(TEXT, TEXT) TO anon, authenticated, service_role;
+
 
 -- Overload B: Accepts individual named parameters
 CREATE OR REPLACE FUNCTION public.public_register_member(
