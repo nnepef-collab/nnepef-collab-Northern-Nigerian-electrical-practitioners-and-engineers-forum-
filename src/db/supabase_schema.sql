@@ -872,7 +872,7 @@ END;
 $$;
 
 -- Function: check_member_duplicate
-CREATE OR REPLACE FUNCTION public.check_member_duplicate(p_nin TEXT, p_phone TEXT)
+CREATE OR REPLACE FUNCTION public.check_member_duplicate(p_nin TEXT, p_phone TEXT, p_exclude_id TEXT DEFAULT NULL)
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -885,7 +885,9 @@ DECLARE
   v_last_10 TEXT;
   v_exists BOOLEAN := false;
   v_matched_status TEXT;
+  v_exclude TEXT;
 BEGIN
+  v_exclude := NULLIF(TRIM(COALESCE(p_exclude_id, '')), '');
   v_clean_nin := NULLIF(REGEXP_REPLACE(COALESCE(p_nin, ''), '\D', '', 'g'), '');
   v_clean_phone := NULLIF(TRIM(COALESCE(p_phone, '')), '');
   v_phone_digits := REGEXP_REPLACE(COALESCE(p_phone, ''), '\D', '', 'g');
@@ -896,7 +898,8 @@ BEGIN
   IF v_clean_nin IS NOT NULL AND length(v_clean_nin) >= 7 THEN
     SELECT status INTO v_matched_status
     FROM public.members
-    WHERE nin = v_clean_nin OR nin_number = v_clean_nin OR REGEXP_REPLACE(nin, '\D', '', 'g') = v_clean_nin
+    WHERE (nin = v_clean_nin OR nin_number = v_clean_nin OR REGEXP_REPLACE(nin, '\D', '', 'g') = v_clean_nin)
+      AND (v_exclude IS NULL OR id != v_exclude)
     LIMIT 1;
     IF FOUND THEN
       v_exists := true;
@@ -906,8 +909,9 @@ BEGIN
   IF NOT v_exists AND v_last_10 IS NOT NULL THEN
     SELECT status INTO v_matched_status
     FROM public.members
-    WHERE phone = v_clean_phone 
-       OR (length(REGEXP_REPLACE(phone, '\D', '', 'g')) >= 10 AND RIGHT(REGEXP_REPLACE(phone, '\D', '', 'g'), 10) = v_last_10)
+    WHERE (phone = v_clean_phone 
+       OR (length(REGEXP_REPLACE(phone, '\D', '', 'g')) >= 10 AND RIGHT(REGEXP_REPLACE(phone, '\D', '', 'g'), 10) = v_last_10))
+      AND (v_exclude IS NULL OR id != v_exclude)
     LIMIT 1;
     IF FOUND THEN
       v_exists := true;
@@ -925,7 +929,7 @@ BEGIN
   END IF;
 END;
 $$;
-GRANT EXECUTE ON FUNCTION public.check_member_duplicate(TEXT, TEXT) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.check_member_duplicate(TEXT, TEXT, TEXT) TO anon, authenticated, service_role;
 
 
 -- Overload B: Accepts individual named parameters

@@ -807,9 +807,10 @@ export const DUPLICATE_REGISTRATION_MESSAGE = 'This NIN or phone number is alrea
  * Checks whether a member with the given NIN or Phone number already exists in Supabase.
  * Enforces one-person-one-membership across ALL member statuses (pending, approved, rejected, suspended).
  */
-export async function checkMemberDuplicateInSupabase(params: { nin?: string; phone?: string }): Promise<{ isDuplicate: boolean; reason?: string }> {
+export async function checkMemberDuplicateInSupabase(params: { nin?: string; phone?: string; excludeMemberId?: string }): Promise<{ isDuplicate: boolean; reason?: string }> {
   const cleanNin = normalizeNin(params.nin);
   const cleanPhone = normalizePhone(params.phone);
+  const excludeId = params.excludeMemberId ? String(params.excludeMemberId).trim() : '';
 
   if (!cleanNin && !cleanPhone) {
     return { isDuplicate: false };
@@ -821,6 +822,7 @@ export async function checkMemberDuplicateInSupabase(params: { nin?: string; pho
     const url = new URL(getApiEndpoint('/api/members/check-duplicate'), origin);
     if (cleanNin) url.searchParams.set('nin', cleanNin);
     if (cleanPhone) url.searchParams.set('phone', cleanPhone);
+    if (excludeId) url.searchParams.set('excludeId', excludeId);
     const res = await fetch(url.toString(), {
       method: 'GET',
       headers: getApiHeaders()
@@ -840,7 +842,8 @@ export async function checkMemberDuplicateInSupabase(params: { nin?: string; pho
     try {
       const { data, error } = await supabase.rpc('check_member_duplicate', {
         p_nin: cleanNin || null,
-        p_phone: cleanPhone || null
+        p_phone: cleanPhone || null,
+        p_exclude_id: excludeId || null
       });
       if (!error && data && (data.is_duplicate || data.isDuplicate)) {
         return { isDuplicate: true, reason: DUPLICATE_REGISTRATION_MESSAGE };
@@ -863,14 +866,22 @@ export async function checkMemberDuplicateInSupabase(params: { nin?: string; pho
         }
       }
       if (orClauses.length > 0) {
-        const { data: matchedRows } = await supabase
+        let query = supabase
           .from('members')
           .select('id, nin, phone, status')
-          .or(orClauses.join(','))
-          .limit(1);
+          .or(orClauses.join(','));
+
+        if (excludeId) {
+          query = query.neq('id', excludeId);
+        }
+
+        const { data: matchedRows } = await query.limit(5);
 
         if (matchedRows && matchedRows.length > 0) {
-          return { isDuplicate: true, reason: DUPLICATE_REGISTRATION_MESSAGE };
+          const conflictRows = excludeId ? matchedRows.filter(r => r.id !== excludeId) : matchedRows;
+          if (conflictRows.length > 0) {
+            return { isDuplicate: true, reason: DUPLICATE_REGISTRATION_MESSAGE };
+          }
         }
       }
     } catch (clientErr) {
@@ -881,17 +892,32 @@ export async function checkMemberDuplicateInSupabase(params: { nin?: string; pho
   return { isDuplicate: false };
 }
 
-export async function saveMemberToSupabase(member: Member): Promise<Member> {
+export async function saveMemberToSupabase(member: Member, options?: { isRegistration?: boolean }): Promise<Member> {
   const memberId = member.id || generateUUID();
   member.id = memberId;
+
+  // Determine if this is a brand new applicant registration or an existing member update/approval
+  const isExplicit = options?.isRegistration;
+  const isApprovalOrUpdate = member.status === 'approved' ||
+    member.status === 'rejected' ||
+    member.status === 'suspended' ||
+    Boolean(member.approvedAt) ||
+    Boolean(member.membershipId) ||
+    options?.isRegistration === false;
+
+  const isRegistration = typeof isExplicit === 'boolean' ? isExplicit : !isApprovalOrUpdate;
 
   // Normalize NIN and phone numbers
   const normalizedNin = normalizeNin(member.nin || member.ninNumber);
   const normalizedPhone = normalizePhone(member.phone);
 
-  // STRICT PRE-CHECK: Reject duplicate registrations before executing writes
-  if (normalizedNin || normalizedPhone) {
-    const dupCheck = await checkMemberDuplicateInSupabase({ nin: normalizedNin, phone: normalizedPhone });
+  // STRICT PRE-CHECK: Reject duplicate registrations ONLY for new applicants (excluding existing member's ID)
+  if (isRegistration && (normalizedNin || normalizedPhone)) {
+    const dupCheck = await checkMemberDuplicateInSupabase({
+      nin: normalizedNin,
+      phone: normalizedPhone,
+      excludeMemberId: memberId
+    });
     if (dupCheck.isDuplicate) {
       throw new Error(DUPLICATE_REGISTRATION_MESSAGE);
     }
@@ -976,10 +1002,10 @@ export async function saveMemberToSupabase(member: Member): Promise<Member> {
     const apiRes = await fetch(getApiEndpoint('/api/members'), {
       method: 'POST',
       headers: getApiHeaders(),
-      body: JSON.stringify(cleanMember)
+      body: JSON.stringify({ ...cleanMember, isRegistration })
     });
 
-    if (apiRes.status === 409) {
+    if (apiRes.status === 409 && isRegistration) {
       throw new Error(DUPLICATE_REGISTRATION_MESSAGE);
     }
 
@@ -990,7 +1016,7 @@ export async function saveMemberToSupabase(member: Member): Promise<Member> {
       }
     } else {
       const errData = await apiRes.json().catch(() => null);
-      if (errData && (errData.code === 'DUPLICATE_REGISTRATION' || (errData.error && errData.error.includes('already registered')))) {
+      if (isRegistration && errData && (errData.code === 'DUPLICATE_REGISTRATION' || (errData.error && errData.error.includes('already registered')))) {
         throw new Error(DUPLICATE_REGISTRATION_MESSAGE);
       }
       saveErrorMessage = errData?.error || '';
@@ -1002,37 +1028,64 @@ export async function saveMemberToSupabase(member: Member): Promise<Member> {
     saveErrorMessage = apiErr?.message || '';
   }
 
-  // 2. Fallback: Direct Supabase PostgreSQL table insert or RPC via client SDK
+  // 2. Fallback: Direct Supabase PostgreSQL table insert, upsert, or RPC via client SDK
   if (!savedMemberRecord && isSupabaseConfigured()) {
     try {
-      // 2a. Attempt secure registration RPC
-      const { data: rpcData, error: rpcError } = await supabase.rpc('public_register_member', {
-        p_payload: dbPayload
-      });
+      if (isRegistration) {
+        // 2a. Attempt secure registration RPC for new registrations
+        const { data: rpcData, error: rpcError } = await supabase.rpc('public_register_member', {
+          p_payload: dbPayload
+        });
 
-      if (!rpcError && rpcData) {
-        if (rpcData.success && rpcData.member) {
-          savedMemberRecord = safeMergeMember(cleanMember, mapSupabaseRowToMember(rpcData.member));
-        } else if (rpcData.code === 'DUPLICATE_REGISTRATION' || (rpcData.error && rpcData.error.includes('already registered'))) {
-          throw new Error(DUPLICATE_REGISTRATION_MESSAGE);
+        if (!rpcError && rpcData) {
+          if (rpcData.success && rpcData.member) {
+            savedMemberRecord = safeMergeMember(cleanMember, mapSupabaseRowToMember(rpcData.member));
+          } else if (rpcData.code === 'DUPLICATE_REGISTRATION' || (rpcData.error && rpcData.error.includes('already registered'))) {
+            throw new Error(DUPLICATE_REGISTRATION_MESSAGE);
+          }
         }
-      }
 
-      // 2b. If RPC unavailable, attempt direct INSERT (NOT upsert to ensure duplicate keys fail safely)
-      if (!savedMemberRecord) {
+        // 2b. Direct INSERT for new registration
+        if (!savedMemberRecord) {
+          const { data, error } = await supabase
+            .from('members')
+            .insert(dbPayload)
+            .select()
+            .maybeSingle();
+
+          if (!error && data) {
+            savedMemberRecord = safeMergeMember(cleanMember, mapSupabaseRowToMember(data));
+          } else if (error) {
+            if (error.code === '23505' || error.message?.includes('already registered') || error.message?.includes('duplicate key') || error.message?.includes('unique')) {
+              throw new Error(DUPLICATE_REGISTRATION_MESSAGE);
+            }
+            saveErrorMessage = error.message;
+          }
+        }
+      } else {
+        // 2c. For member updates and admin approvals: perform UPSERT or targeted UPDATE
         const { data, error } = await supabase
           .from('members')
-          .insert(dbPayload)
+          .upsert(dbPayload, { onConflict: 'id' })
           .select()
           .maybeSingle();
 
         if (!error && data) {
           savedMemberRecord = safeMergeMember(cleanMember, mapSupabaseRowToMember(data));
         } else if (error) {
-          if (error.code === '23505' || error.message?.includes('already registered') || error.message?.includes('duplicate key') || error.message?.includes('unique')) {
-            throw new Error(DUPLICATE_REGISTRATION_MESSAGE);
+          // If upsert failed, try targeted update
+          const { data: updateData, error: updateError } = await supabase
+            .from('members')
+            .update(dbPayload)
+            .eq('id', memberId)
+            .select()
+            .maybeSingle();
+
+          if (!updateError && updateData) {
+            savedMemberRecord = safeMergeMember(cleanMember, mapSupabaseRowToMember(updateData));
+          } else {
+            saveErrorMessage = updateError?.message || error.message;
           }
-          saveErrorMessage = error.message;
         }
       }
     } catch (clientErr: any) {
@@ -1045,7 +1098,7 @@ export async function saveMemberToSupabase(member: Member): Promise<Member> {
 
   // If neither method succeeded, throw informative error
   if (!savedMemberRecord) {
-    if (saveErrorMessage && saveErrorMessage.includes('already registered')) {
+    if (isRegistration && saveErrorMessage && saveErrorMessage.includes('already registered')) {
       throw new Error(DUPLICATE_REGISTRATION_MESSAGE);
     }
     if (!isSupabaseConfigured()) {

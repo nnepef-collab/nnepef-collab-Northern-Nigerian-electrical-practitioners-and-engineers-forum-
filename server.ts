@@ -203,7 +203,7 @@ async function startServer() {
   const DUPLICATE_REGISTRATION_MESSAGE = 'This NIN or phone number is already registered with N-NEPEF. You cannot submit another membership application.';
 
   // Helper to sync or write member payload directly to Supabase PostgreSQL table public.members
-  async function syncMemberToSupabase(rawMember: any, isRegistration: boolean = true) {
+  async function syncMemberToSupabase(rawMember: any, isRegistration?: boolean) {
     const effectiveKey = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_KEY;
     if (!SUPABASE_URL || !effectiveKey) {
       return { success: false, error: 'Supabase credentials not available on server' };
@@ -211,16 +211,32 @@ async function startServer() {
 
     const payload = cleanMemberDbPayload(rawMember);
 
+    // Determine if this is a brand new registration or an existing member update/approval
+    const isApprovalOrUpdate = rawMember.status === 'approved' ||
+      rawMember.status === 'rejected' ||
+      rawMember.status === 'suspended' ||
+      Boolean(rawMember.approvedAt) ||
+      Boolean(rawMember.approved_at) ||
+      Boolean(rawMember.membershipId) ||
+      Boolean(rawMember.membership_id) ||
+      rawMember.isRegistration === false;
+
+    const effectiveIsRegistration = typeof isRegistration === 'boolean'
+      ? isRegistration
+      : !isApprovalOrUpdate;
+
+    const memberIdToExclude = (rawMember.id || payload.id || '').trim();
+
     try {
       const rawPhone = payload.phone ? String(payload.phone).trim() : '';
       const digitsOnlyPhone = rawPhone.replace(/\D/g, '');
       const last10Phone = digitsOnlyPhone.length >= 10 ? digitsOnlyPhone.slice(-10) : digitsOnlyPhone;
       const cleanNin = payload.nin ? String(payload.nin).replace(/\D/g, '').trim() : '';
 
-      // 1. STRICT DUPLICATE PREVENTION FOR NEW REGISTRATIONS
+      // 1. STRICT DUPLICATE PREVENTION FOR NEW REGISTRATIONS ONLY
       // Check Supabase PostgreSQL across ALL member statuses (pending, approved, rejected, suspended).
-      // Uses the server-side service-role key which bypasses RLS and inspects the entire table.
-      if (isRegistration && (cleanNin || last10Phone)) {
+      // If updating an existing member, exclude their own ID so approval/updates are never blocked!
+      if (effectiveIsRegistration && (cleanNin || last10Phone)) {
         const orFilters: string[] = [];
         if (cleanNin && cleanNin.length >= 8) {
           orFilters.push(`nin.eq.${encodeURIComponent(cleanNin)}`);
@@ -235,7 +251,7 @@ async function startServer() {
 
         if (orFilters.length > 0) {
           try {
-            const checkUrl = `${SUPABASE_URL}/rest/v1/members?or=(${orFilters.join(',')})&select=id,status,nin,phone&limit=1`;
+            const checkUrl = `${SUPABASE_URL}/rest/v1/members?or=(${orFilters.join(',')})&select=id,status,nin,phone&limit=10`;
             const checkRes = await fetch(checkUrl, {
               headers: {
                 'apikey': effectiveKey,
@@ -246,13 +262,17 @@ async function startServer() {
             if (checkRes.ok) {
               const existingRows = await checkRes.json();
               if (Array.isArray(existingRows) && existingRows.length > 0) {
-                console.warn('[Duplicate Registration Blocked] Member already exists with status:', existingRows[0].status, 'ID:', existingRows[0].id);
-                return {
-                  success: false,
-                  code: 'DUPLICATE_REGISTRATION',
-                  status: 409,
-                  error: DUPLICATE_REGISTRATION_MESSAGE
-                };
+                // Exclude the member's own record from duplicate detection
+                const conflictRows = existingRows.filter((r: any) => r.id !== memberIdToExclude);
+                if (conflictRows.length > 0) {
+                  console.warn('[Duplicate Registration Blocked] Another member already exists with status:', conflictRows[0].status, 'ID:', conflictRows[0].id);
+                  return {
+                    success: false,
+                    code: 'DUPLICATE_REGISTRATION',
+                    status: 409,
+                    error: DUPLICATE_REGISTRATION_MESSAGE
+                  };
+                }
               }
             }
           } catch (checkErr) {
@@ -261,14 +281,17 @@ async function startServer() {
         }
       }
 
-      // For new registrations: ALWAYS generate a new UUID. Do not reuse existing records.
-      if (isRegistration) {
+      // For new registrations without an authentic ID: generate a standard new UUID.
+      // For updates or existing members: preserve their existing ID!
+      if (effectiveIsRegistration && (!payload.id || payload.id.startsWith('m-'))) {
         payload.id = crypto.randomUUID();
+      } else if (rawMember.id && !rawMember.id.startsWith('m-')) {
+        payload.id = rawMember.id;
       }
 
       // For non-registration updates (admin or profile update), find existing record by ID
       let existingRow: any = null;
-      if (!isRegistration && payload.id && !payload.id.startsWith('m-')) {
+      if (!effectiveIsRegistration && payload.id && !payload.id.startsWith('m-')) {
         try {
           const idCheckRes = await fetch(`${SUPABASE_URL}/rest/v1/members?id=eq.${encodeURIComponent(payload.id)}&select=*&limit=1`, {
             headers: {
@@ -288,10 +311,10 @@ async function startServer() {
       }
 
       // If updating an existing record, preserve populated fields
-      if (!isRegistration && existingRow) {
+      if (!effectiveIsRegistration && existingRow) {
         payload.id = existingRow.id;
 
-        if (existingRow.status === 'approved') {
+        if (existingRow.status === 'approved' && !payload.status) {
           payload.status = 'approved';
         }
         if (existingRow.membership_id && !payload.membership_id) {
@@ -354,7 +377,7 @@ async function startServer() {
       }
 
       // 2. Authoritative direct write to Supabase PostgreSQL table public.members
-      const preferHeader = isRegistration
+      const preferHeader = effectiveIsRegistration
         ? 'return=representation'
         : 'resolution=merge-duplicates,return=representation';
 
@@ -386,25 +409,19 @@ async function startServer() {
           conflictText.includes('nin') ||
           conflictText.includes('phone')
         ) {
-          return {
-            success: false,
-            code: 'DUPLICATE_REGISTRATION',
-            status: 409,
-            error: DUPLICATE_REGISTRATION_MESSAGE
-          };
-        }
-        if (isRegistration) {
-          return {
-            success: false,
-            code: 'DUPLICATE_REGISTRATION',
-            status: 409,
-            error: DUPLICATE_REGISTRATION_MESSAGE
-          };
+          if (effectiveIsRegistration) {
+            return {
+              success: false,
+              code: 'DUPLICATE_REGISTRATION',
+              status: 409,
+              error: DUPLICATE_REGISTRATION_MESSAGE
+            };
+          }
         }
       }
 
       // 4. If updating existing non-registration record and upsert returned 204, execute targeted PATCH
-      if (!isRegistration && payload.id) {
+      if (!effectiveIsRegistration && payload.id) {
         const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/members?id=eq.${encodeURIComponent(payload.id)}`, {
           method: 'PATCH',
           headers: {
@@ -703,6 +720,7 @@ async function startServer() {
       const rawPhone = req.query.phone ? String(req.query.phone).trim() : '';
       const phoneDigits = rawPhone.replace(/\D/g, '');
       const core10 = phoneDigits.length >= 10 ? phoneDigits.slice(-10) : '';
+      const excludeId = req.query.excludeId || req.query.exclude_id ? String(req.query.excludeId || req.query.exclude_id).trim() : '';
 
       if (!nin && !core10) {
         return res.json({ isDuplicate: false });
@@ -729,7 +747,7 @@ async function startServer() {
         return res.json({ isDuplicate: false });
       }
 
-      const url = `${SUPABASE_URL}/rest/v1/members?or=(${orFilters.join(',')})&select=id,status,nin,phone&limit=1`;
+      const url = `${SUPABASE_URL}/rest/v1/members?or=(${orFilters.join(',')})&select=id,status,nin,phone&limit=10`;
       const response = await fetch(url, {
         headers: {
           'apikey': effectiveKey,
@@ -740,11 +758,14 @@ async function startServer() {
       if (response.ok) {
         const rows = await response.json();
         if (Array.isArray(rows) && rows.length > 0) {
-          return res.json({
-            isDuplicate: true,
-            status: rows[0].status,
-            error: 'This NIN or phone number is already registered with N-NEPEF. You cannot submit another membership application.'
-          });
+          const conflictRows = excludeId ? rows.filter((r: any) => r.id !== excludeId) : rows;
+          if (conflictRows.length > 0) {
+            return res.json({
+              isDuplicate: true,
+              status: conflictRows[0].status,
+              error: 'This NIN or phone number is already registered with N-NEPEF. You cannot submit another membership application.'
+            });
+          }
         }
       }
 
@@ -761,6 +782,7 @@ async function startServer() {
       const rawPhone = req.body.phone ? String(req.body.phone).trim() : '';
       const phoneDigits = rawPhone.replace(/\D/g, '');
       const core10 = phoneDigits.length >= 10 ? phoneDigits.slice(-10) : '';
+      const excludeId = req.body.excludeId || req.body.exclude_id ? String(req.body.excludeId || req.body.exclude_id).trim() : '';
 
       if (!nin && !core10) {
         return res.json({ isDuplicate: false });
@@ -787,7 +809,7 @@ async function startServer() {
         return res.json({ isDuplicate: false });
       }
 
-      const url = `${SUPABASE_URL}/rest/v1/members?or=(${orFilters.join(',')})&select=id,status,nin,phone&limit=1`;
+      const url = `${SUPABASE_URL}/rest/v1/members?or=(${orFilters.join(',')})&select=id,status,nin,phone&limit=10`;
       const response = await fetch(url, {
         headers: {
           'apikey': effectiveKey,
@@ -798,11 +820,14 @@ async function startServer() {
       if (response.ok) {
         const rows = await response.json();
         if (Array.isArray(rows) && rows.length > 0) {
-          return res.json({
-            isDuplicate: true,
-            status: rows[0].status,
-            error: 'This NIN or phone number is already registered with N-NEPEF. You cannot submit another membership application.'
-          });
+          const conflictRows = excludeId ? rows.filter((r: any) => r.id !== excludeId) : rows;
+          if (conflictRows.length > 0) {
+            return res.json({
+              isDuplicate: true,
+              status: conflictRows[0].status,
+              error: 'This NIN or phone number is already registered with N-NEPEF. You cannot submit another membership application.'
+            });
+          }
         }
       }
 
@@ -821,9 +846,23 @@ async function startServer() {
         return res.status(400).json({ success: false, error: 'Invalid member data: fullName is required.' });
       }
 
+      // Determine if this is an explicit new registration or an existing member update/approval
+      const isExplicitRegistration = req.body.isRegistration;
+      const isApprovalOrUpdate = member.status === 'approved' ||
+        member.status === 'rejected' ||
+        member.status === 'suspended' ||
+        Boolean(member.approvedAt) ||
+        Boolean(member.approved_at) ||
+        Boolean(member.membershipId) ||
+        Boolean(member.membership_id) ||
+        req.body.isRegistration === false;
+
+      const isRegistration = typeof isExplicitRegistration === 'boolean'
+        ? isExplicitRegistration
+        : !isApprovalOrUpdate;
+
       // Authoritative sync directly to Supabase PostgreSQL table public.members
-      // isRegistration = true strictly checks for duplicate NIN or Phone across all statuses
-      const supabaseResult = await syncMemberToSupabase(member, true);
+      const supabaseResult = await syncMemberToSupabase(member, isRegistration);
 
       if (supabaseResult.success) {
         const finalMember = supabaseResult.member || member;
