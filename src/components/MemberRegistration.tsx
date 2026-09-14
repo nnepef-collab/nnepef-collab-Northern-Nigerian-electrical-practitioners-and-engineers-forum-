@@ -3,7 +3,7 @@ import { Member, ForumSettings } from '../types';
 import { NORTHERN_STATES, SPECIALIZATIONS } from '../data/initialData';
 import { DualImageUpload } from './DualImageUpload';
 import { generateUUID } from '../utils/uuid';
-import { downloadMemberProfilePdf } from '../services/pdfService';
+import { downloadMemberProfilePdf, downloadApprovalSlipPdf } from '../services/pdfService';
 import { checkMemberDuplicateInSupabase, DUPLICATE_REGISTRATION_MESSAGE } from '../services/supabaseService';
 import { normalizeNin, normalizePhone, isValidNin, isValidPhone } from '../utils/memberHelpers';
 import { 
@@ -39,30 +39,76 @@ interface MemberRegistrationProps {
   setCurrentView: (view: string) => void;
 }
 
-const QUALIFICATION_LEVELS = [
-  'B.Sc. / B.Eng. Electrical Engineering',
-  'HND Electrical / Electronics',
-  'OND Electrical Engineering',
-  'M.Sc. / M.Eng. Electrical Engineering',
-  'Ph.D. Electrical Engineering',
-  'NABTEB / Technical Certificate',
-  'Trade Test (Grade I, II, III)',
-  'SSCE / WAEC / NECO',
-  'Other Professional Certificate'
+export const OTHER_QUALIFICATION_LABEL = 'Other Qualification (Specify / Rubuta Matsayin Karatu)';
+
+export const QUALIFICATION_LEVELS = [
+  'Doctorate / Ph.D. (Ph.D., D.Eng., D.Sc.)',
+  'Master’s Degree (M.Sc., M.Eng., M.Tech, MBA, etc.)',
+  'Postgraduate Diploma (PGD)',
+  'Bachelor’s Degree (B.Eng., B.Sc., B.Tech, etc.)',
+  'Higher National Diploma (HND)',
+  'National Diploma / OND (ND / OND)',
+  'Nigeria Certificate in Education (NCE)',
+  'Full Technological Certificate (City & Guilds / FTC)',
+  'NABTEB / National Technical Certificate (NTC / ANTC)',
+  'Federal Trade Test (Grade I, II, III / Ministry of Labour)',
+  'Senior Secondary Certificate (SSCE / WAEC / NECO / GCE)',
+  OTHER_QUALIFICATION_LABEL
 ];
 
-const OCCUPATION_ROLES = [
+export const OTHER_COURSE_LABEL = 'Other Course / Field of Study (Specify / Rubuta Dakanka)';
+
+export const COMMON_COURSES = [
+  'Electrical & Electronics Engineering',
+  'Electrical Installation & Maintenance Work',
+  'Solar PV Installation & Renewable Energy',
+  'CCTV Camera & Electronic Security Systems',
+  'Satellite TV & Dish Installation (Setlite)',
+  'Fire Alarm & Fire Protection Systems',
+  'Electronics & Telecommunications Engineering',
+  'Power & High Voltage Systems Engineering',
+  'Computer Engineering',
+  'Computer Science / Software Engineering / IT',
+  'Mechanical Engineering',
+  'Mechatronics & Robotics Engineering',
+  'Civil & Structural Engineering',
+  'Chemical / Petroleum Engineering',
+  'Physics / Applied Physics with Electronics',
+  'Industrial & Production Engineering',
+  'Building Technology & Construction',
+  'Technical & Vocational Education (Elect / Mech)',
+  'Estate Management / Architecture',
+  'Public Administration',
+  'Business Administration & Management',
+  OTHER_COURSE_LABEL
+];
+
+export const OTHER_OCCUPATION_LABEL = 'Other Profession / Occupation (Specify / Rubuta Dakanka)';
+
+export const OCCUPATION_ROLES = [
+  'Solar PV & Inverter Installation Specialist',
+  'CCTV Camera & Security Systems Installer',
+  'Satellite Dish & Cable TV Installer (Setlite)',
+  'Fire Alarm & Safety Systems Technician',
+  'Certified Electrical Wireman',
   'Electrical Engineer',
   'Electrical Contractor / Consultant',
-  'Certified Electrical Wireman',
-  'Solar PV & Renewable Energy Installer',
   'Industrial Automation & Control Specialist',
   'High-Voltage Substation Technician',
   'Electrical Maintenance Technician',
   'Generator & Power Systems Specialist',
-  'Academic / Researcher',
-  'Apprentice / Trainee'
+  'Building Electrical Installation Specialist',
+  'Public Administrator / Policy & Administrative Officer',
+  'Academic / Lecturer / Researcher',
+  'Allied / Non-Electrical Engineering Specialist',
+  'Project Engineer / Site Manager',
+  'Technical Officer / Safety Inspector',
+  'Student / Graduate Trainee',
+  'Apprentice / Trainee',
+  OTHER_OCCUPATION_LABEL
 ];
+
+export const OTHER_SPECIALIZATION_LABEL = 'Other Technical Specialization (Specify / Rubuta Dakanka)';
 
 const IDENTIFICATION_TYPES = [
   'National Identification Number (NIN)',
@@ -87,6 +133,7 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
   const [copiedAccName, setCopiedAccName] = useState(false);
   const [copiedRef, setCopiedRef] = useState(false);
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
+  const [selectedPdfType, setSelectedPdfType] = useState<'slip' | 'biodata' | 'both'>('slip');
   const [showSlipModal, setShowSlipModal] = useState(false);
 
   const initialForm = {
@@ -96,6 +143,7 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
     dob: '',
     phone: '',
     altPhone: '',
+    email: '',
     nationality: 'Nigerian',
     state: 'Kano',
     lga: '',
@@ -103,11 +151,12 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
     passportUrl: '',
     // 2. Identification
     nin: '',
+    existingMembershipId: '',
     otherIdType: 'National Identification Number (NIN)',
     otherIdNumber: '',
     // 3. Education
-    highestQualification: QUALIFICATION_LEVELS[0],
-    courseOfStudy: 'Electrical Engineering',
+    highestQualification: 'Bachelor’s Degree (B.Eng., B.Sc., B.Tech, etc.)',
+    courseOfStudy: 'Electrical & Electronics Engineering',
     institution: '',
     graduationYear: '',
     otherQualifications: '',
@@ -142,6 +191,27 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
       }
     } catch (e) {}
     return initialForm;
+  });
+
+  // Education & Professional Custom/Other states
+  const isQualPredefined = QUALIFICATION_LEVELS.filter(q => q !== OTHER_QUALIFICATION_LABEL).includes(formData.highestQualification);
+  const [qualSelectChoice, setQualSelectChoice] = useState<string>(() => {
+    return isQualPredefined ? formData.highestQualification : OTHER_QUALIFICATION_LABEL;
+  });
+
+  const isCoursePredefined = COMMON_COURSES.filter(c => c !== OTHER_COURSE_LABEL).includes(formData.courseOfStudy);
+  const [courseSelectChoice, setCourseSelectChoice] = useState<string>(() => {
+    return isCoursePredefined ? formData.courseOfStudy : OTHER_COURSE_LABEL;
+  });
+
+  const isOccupationPredefined = OCCUPATION_ROLES.filter(r => r !== OTHER_OCCUPATION_LABEL).includes(formData.occupation);
+  const [occupationSelectChoice, setOccupationSelectChoice] = useState<string>(() => {
+    return isOccupationPredefined ? formData.occupation : OTHER_OCCUPATION_LABEL;
+  });
+
+  const isSpecPredefined = SPECIALIZATIONS.filter(s => s !== OTHER_SPECIALIZATION_LABEL).includes(formData.specialization);
+  const [specSelectChoice, setSpecSelectChoice] = useState<string>(() => {
+    return isSpecPredefined ? formData.specialization : OTHER_SPECIALIZATION_LABEL;
   });
 
   // Preserve form draft in case mobile camera or browser refresh interrupts
@@ -218,6 +288,45 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
       return;
     }
 
+    // Optional Email Validation (Ba dole ba ne, amma idan an saka a tabbatar da ingancinsa)
+    if (formData.email && formData.email.trim()) {
+      const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailPattern.test(formData.email.trim())) {
+        setValidationError('Please enter a valid email address (e.g. member@example.com) or leave it blank.');
+        return;
+      }
+    }
+
+    // Education & Professional validation
+    const trimmedQual = formData.highestQualification?.trim();
+    if (!trimmedQual || trimmedQual === OTHER_QUALIFICATION_LABEL) {
+      setValidationError('Please select or specify your Highest Educational Qualification (matsayin karatunka).');
+      return;
+    }
+
+    const trimmedCourse = formData.courseOfStudy?.trim();
+    if (!trimmedCourse || trimmedCourse === OTHER_COURSE_LABEL) {
+      setValidationError('Please select or specify your Course / Field of Study (fannin karatunka).');
+      return;
+    }
+
+    if (!formData.institution || !formData.institution.trim()) {
+      setValidationError('Please enter your Institution / School name.');
+      return;
+    }
+
+    const trimmedOccupation = formData.occupation?.trim();
+    if (!trimmedOccupation || trimmedOccupation === OTHER_OCCUPATION_LABEL) {
+      setValidationError('Please select or specify your Current Occupation / Title (sana\'arka ko matsayin aiki).');
+      return;
+    }
+
+    const trimmedSpec = formData.specialization?.trim();
+    if (!trimmedSpec || trimmedSpec === OTHER_SPECIALIZATION_LABEL) {
+      setValidationError('Please select or specify your Primary Specialization (fannin kwarewarka).');
+      return;
+    }
+
     setIsSubmitting(true);
     setValidationError(null);
 
@@ -255,6 +364,9 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
       const newMember: Member = {
         id: memberId,
         membershipId: '', // Blank until assigned manually by Admin!
+        existingMembershipId: formData.existingMembershipId?.trim() ? formData.existingMembershipId.trim().toUpperCase() : undefined,
+        requestedMembershipId: formData.existingMembershipId?.trim() ? formData.existingMembershipId.trim().toUpperCase() : undefined,
+        notes: formData.existingMembershipId?.trim() ? `[Existing Member ID: ${formData.existingMembershipId.trim().toUpperCase()}]` : undefined,
         applicationReference: appRef,
         fullName: formData.fullName.trim(),
         gender: formData.gender,
@@ -263,6 +375,7 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
         phone: cleanPhone,
         altPhone: formData.altPhone ? normalizePhone(formData.altPhone) : undefined,
         alternativePhone: formData.altPhone ? normalizePhone(formData.altPhone) : undefined,
+        email: formData.email?.trim() ? formData.email.trim().toLowerCase() : undefined,
         nationality: formData.nationality?.trim() || 'Nigerian',
         nin: cleanNin,
         ninNumber: cleanNin,
@@ -336,7 +449,16 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
     if (!submittedMember) return;
     setIsDownloadingPdf(true);
     try {
-      await downloadMemberProfilePdf(submittedMember, settings);
+      if (selectedPdfType === 'slip') {
+        await downloadApprovalSlipPdf(submittedMember, settings);
+      } else if (selectedPdfType === 'biodata') {
+        await downloadMemberProfilePdf(submittedMember, settings);
+      } else if (selectedPdfType === 'both') {
+        // Download both documents in sequence
+        await downloadApprovalSlipPdf(submittedMember, settings);
+        await new Promise(resolve => setTimeout(resolve, 600));
+        await downloadMemberProfilePdf(submittedMember, settings);
+      }
     } catch (e) {
       console.error('PDF download error:', e);
     } finally {
@@ -422,6 +544,15 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
                   Status: PENDING ADMIN APPROVAL
                 </span>
               </div>
+              {submittedMember.existingMembershipId && (
+                <div className="mt-3 p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/50 text-xs text-amber-800 dark:text-amber-300">
+                  <span className="font-bold">Lambar ID Da Kuka Gabatar (Submitted ID): </span>
+                  <span className="font-mono font-bold text-slate-900 dark:text-white ml-1">{submittedMember.existingMembershipId}</span>
+                  <p className="text-[11px] text-amber-700 dark:text-amber-400 mt-1">
+                    ⚠️ Wannan lambar ID tana jiran amincewar Admin. Ba za ta fara aiki ba har sai Admin ya duba kuma ya tabbatar (Approved).
+                  </p>
+                </div>
+              )}
             </div>
           </div>
 
@@ -438,32 +569,106 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
             </ul>
           </div>
 
-          {/* Action Buttons: Choose Print or Download PDF */}
-          <div className="space-y-3 pt-2">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <button
-                onClick={handleDownloadProfile}
-                disabled={isDownloadingPdf}
-                className="flex items-center justify-center gap-2 py-3.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-75 text-white font-bold text-xs shadow-md transition-all cursor-pointer active:scale-95"
-                title="Download Official Slip as PDF file with authentic signature and logo"
-              >
-                {isDownloadingPdf ? (
-                  <Loader2 className="w-4 h-4 animate-spin text-emerald-200" />
-                ) : (
-                  <Download className="w-4 h-4 text-emerald-200" />
-                )}
-                <span>{isDownloadingPdf ? 'Generating PDF...' : 'Download PDF Slip (With Signature & Logo)'}</span>
-              </button>
+          {/* Action: Registration PDF Download Select Box */}
+          <div className="bg-slate-50 dark:bg-slate-800/90 rounded-2xl p-4 sm:p-5 border border-slate-200 dark:border-slate-700 shadow-xs space-y-4 pt-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <label htmlFor="pdf-type-select" className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                  <FileText className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                  <span>Zaɓi Nau'in Takardar PDF (Select Registration PDF to Download) *</span>
+                </label>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Zaɓi takardar da kake son saukewa (Official Slip ko Cikakken Fom din Bayanai)
+                </p>
+              </div>
+              <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 w-fit">
+                Official PDF Document
+              </span>
+            </div>
 
+            <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+              {/* Select Element */}
+              <div className="sm:col-span-7">
+                <select
+                  id="pdf-type-select"
+                  value={selectedPdfType}
+                  onChange={(e) => setSelectedPdfType(e.target.value as 'slip' | 'biodata' | 'both')}
+                  className="w-full px-3.5 py-3 rounded-xl border-2 border-emerald-500/50 dark:border-emerald-500/40 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs font-bold focus:ring-2 focus:ring-emerald-500 outline-none cursor-pointer shadow-xs"
+                >
+                  <option value="slip">
+                    1. Official Registration Slip (Takardar Shaidar Rijista / Slip PDF)
+                  </option>
+                  <option value="biodata">
+                    2. Full Registration Form (Cikakken Fom ɗin Bayanan Mamba / Bio-Data PDF)
+                  </option>
+                  <option value="both">
+                    3. Download Both Documents (Zazzage Duka Biyu - Slip & Fom)
+                  </option>
+                </select>
+              </div>
+
+              {/* Download Action Button */}
+              <div className="sm:col-span-5">
+                <button
+                  type="button"
+                  onClick={handleDownloadProfile}
+                  disabled={isDownloadingPdf}
+                  className="w-full h-full min-h-[44px] flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 disabled:opacity-75 text-white font-bold text-xs shadow-md transition-all cursor-pointer whitespace-nowrap"
+                  title="Download selected official PDF document"
+                >
+                  {isDownloadingPdf ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-emerald-200" />
+                  ) : (
+                    <Download className="w-4 h-4 text-emerald-200" />
+                  )}
+                  <span>
+                    {isDownloadingPdf
+                      ? 'Generating PDF...'
+                      : selectedPdfType === 'slip'
+                        ? 'Download Slip (PDF)'
+                        : selectedPdfType === 'biodata'
+                          ? 'Download Bio-Data (PDF)'
+                          : 'Download Both (PDFs)'}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            {/* Description note based on selection */}
+            <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-[11px] text-slate-600 dark:text-slate-300 flex items-start gap-2 leading-relaxed">
+              <Sparkles className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+              <div>
+                {selectedPdfType === 'slip' && (
+                  <span>
+                    <strong>Official Registration Slip:</strong> Takardar shaida ce mai tambarin N-NEPEF, lambar aikace-aikace (Reference), lambar tantancewa (QR Code), da sa hannun Sakatare Janar. Wannan ce ainihin takardar shaidar neman mambanci.
+                  </span>
+                )}
+                {selectedPdfType === 'biodata' && (
+                  <span>
+                    <strong>Full Registration Bio-Data Form:</strong> Cikakken fom ɗin rijista ne mai shafuka dake ɗauke da dukkanin bayanan karatunka, sana'arka, Next of Kin, da hoton shaidar biya.
+                  </span>
+                )}
+                {selectedPdfType === 'both' && (
+                  <span>
+                    <strong>Duka Biyu (Both Documents):</strong> Tsarin zai sauke maka duka takardun biyu (Official Registration Slip tare da Full Bio-Data Form) a jere ba tare da bata lokaci ba.
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Print Slip Button */}
+            <div className="pt-1">
               <button
+                type="button"
                 onClick={() => setShowSlipModal(true)}
-                className="flex items-center justify-center gap-2 py-3.5 px-4 rounded-xl bg-[#0A2E73] hover:bg-sky-900 text-white font-bold text-xs shadow-md transition-all cursor-pointer active:scale-95"
-                title="Open and print the official slip or save directly"
+                className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-[#0A2E73] hover:bg-sky-900 text-white font-bold text-xs shadow-md transition-all cursor-pointer active:scale-95"
+                title="Open and print the official slip preview directly"
               >
                 <Printer className="w-4 h-4 text-[#2EA3F2]" />
-                <span>Print Official Slip (With Signature & Logo)</span>
+                <span>Bude & Buga Takardar Slip (Print Official Slip Preview)</span>
               </button>
             </div>
+          </div>
 
             <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-1">
               <button
@@ -496,10 +701,8 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
           )}
 
         </div>
-
-      </div>
-    );
-  }
+      );
+    }
 
   // -------------------------------------------------------------
   // REGISTRATION FORM
@@ -631,6 +834,20 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
                 placeholder="e.g. +234 802 987 6543"
                 value={formData.altPhone}
                 onChange={(e) => setFormData({ ...formData, altPhone: e.target.value })}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white text-xs font-semibold focus:ring-2 focus:ring-sky-500 outline-none"
+              />
+            </div>
+
+            {/* Email Address (Optional / Ba Dole Ba) */}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                Email Address <span className="text-slate-400 font-normal text-[11px]">(Optional / Ba Dole Ba)</span>
+              </label>
+              <input
+                type="email"
+                placeholder="e.g. member@example.com"
+                value={formData.email}
+                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white text-xs font-semibold focus:ring-2 focus:ring-sky-500 outline-none"
               />
             </div>
@@ -773,6 +990,28 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white text-xs font-semibold focus:ring-2 focus:ring-sky-500 outline-none"
               />
             </div>
+
+            {/* Existing Membership ID Number (Optional - Idan kana da ita) */}
+            <div className="sm:col-span-2 lg:col-span-3 space-y-2 p-4 rounded-2xl border border-amber-200 dark:border-amber-900/60 bg-gradient-to-r from-amber-50/70 to-orange-50/50 dark:from-amber-950/30 dark:to-orange-950/20">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200">
+                  Lambar Zama Mamba / Existing ID Number <span className="text-amber-700 dark:text-amber-400 font-normal text-[11px]">(Optional / Idan kana da ita)</span>
+                </label>
+                <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800">
+                  Ba zai fara aiki ba sai Admin ya amince
+                </span>
+              </div>
+              <input
+                type="text"
+                placeholder="Misali: NNEPEF/KN/2020/001 ko duk wata tsohuwar lambar ku (idan akwai)"
+                value={formData.existingMembershipId}
+                onChange={(e) => setFormData({ ...formData, existingMembershipId: e.target.value.toUpperCase() })}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-amber-300 dark:border-amber-700/80 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs font-mono font-bold focus:ring-2 focus:ring-amber-500 outline-none uppercase shadow-xs"
+              />
+              <p className="text-[11px] text-amber-800 dark:text-amber-300/90 leading-relaxed font-medium">
+                ⚠️ <strong>Muhimmiyar Sanarwa:</strong> Idan kana da tsohuwar lambar N-NEPEF Membership ID ko wata lamba da aka taba baka, zaka iya sakawa a nan. Amma <strong>ba za ta fara aiki ba har sai Admin ya duba takardunka kuma ya amince da ita (Approved)</strong>. Idan baka da ita, bar gurin a fili za a baka sabuwa da zarar an amince.
+              </p>
+            </div>
           </div>
         </div>
 
@@ -795,33 +1034,108 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {/* Qualification */}
             <div className="space-y-1.5">
-              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
-                Highest Qualification <span className="text-red-500">*</span>
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                  Highest Qualification <span className="text-red-500">*</span>
+                </label>
+                {qualSelectChoice === OTHER_QUALIFICATION_LABEL && (
+                  <span className="text-[10px] font-bold text-sky-600 dark:text-sky-400 bg-sky-50 dark:bg-sky-950 px-2 py-0.5 rounded-md border border-sky-200 dark:border-sky-800">
+                    Custom Entry
+                  </span>
+                )}
+              </div>
               <select
-                value={formData.highestQualification}
-                onChange={(e) => setFormData({ ...formData, highestQualification: e.target.value })}
+                value={qualSelectChoice}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setQualSelectChoice(val);
+                  if (val === OTHER_QUALIFICATION_LABEL) {
+                    if (QUALIFICATION_LEVELS.includes(formData.highestQualification)) {
+                      setFormData(prev => ({ ...prev, highestQualification: '' }));
+                    }
+                  } else {
+                    setFormData(prev => ({ ...prev, highestQualification: val }));
+                  }
+                }}
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white text-xs font-semibold focus:ring-2 focus:ring-sky-500 outline-none"
               >
                 {QUALIFICATION_LEVELS.map(q => (
                   <option key={q} value={q}>{q}</option>
                 ))}
               </select>
+
+              {/* Custom Qualification Input when "Other" is chosen */}
+              {qualSelectChoice === OTHER_QUALIFICATION_LABEL && (
+                <div className="space-y-1 mt-2 pt-2 border-t border-sky-100 dark:border-sky-900/60 animate-fadeIn">
+                  <label className="block text-[11px] font-bold text-sky-700 dark:text-sky-300">
+                    Specify Your Qualification (Rubuta Matsayin Karatunka) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Ph.D. Engineering, Executive Master's, PGD, etc."
+                    value={formData.highestQualification === OTHER_QUALIFICATION_LABEL ? '' : formData.highestQualification}
+                    onChange={(e) => setFormData(prev => ({ ...prev, highestQualification: e.target.value }))}
+                    className="w-full px-3 py-2 rounded-xl border-2 border-sky-400 dark:border-sky-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs font-semibold focus:ring-2 focus:ring-sky-500 outline-none"
+                  />
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                    Rubuta cikakken matsayin karatunka idan baya cikin jerin da ke sama.
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Course of Study */}
             <div className="space-y-1.5">
-              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
-                Course / Field of Study <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                required
-                placeholder="e.g. Electrical & Electronics Engineering"
-                value={formData.courseOfStudy}
-                onChange={(e) => setFormData({ ...formData, courseOfStudy: e.target.value })}
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                  Course / Field of Study <span className="text-red-500">*</span>
+                </label>
+                {courseSelectChoice === OTHER_COURSE_LABEL && (
+                  <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950 px-2 py-0.5 rounded-md border border-emerald-200 dark:border-emerald-800">
+                    Non-Electrical / Custom
+                  </span>
+                )}
+              </div>
+              <select
+                value={courseSelectChoice}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setCourseSelectChoice(val);
+                  if (val === OTHER_COURSE_LABEL) {
+                    if (COMMON_COURSES.includes(formData.courseOfStudy)) {
+                      setFormData(prev => ({ ...prev, courseOfStudy: '' }));
+                    }
+                  } else {
+                    setFormData(prev => ({ ...prev, courseOfStudy: val }));
+                  }
+                }}
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white text-xs font-semibold focus:ring-2 focus:ring-sky-500 outline-none"
-              />
+              >
+                {COMMON_COURSES.map(c => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+
+              {/* Custom Course Input when "Other" is chosen */}
+              {courseSelectChoice === OTHER_COURSE_LABEL && (
+                <div className="space-y-1 mt-2 pt-2 border-t border-emerald-100 dark:border-emerald-900/60 animate-fadeIn">
+                  <label className="block text-[11px] font-bold text-emerald-700 dark:text-emerald-300">
+                    Specify Your Course / Field of Study (Rubuta Fannin Karatunka) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Mechanical Engineering, Physics, Accounting, Economics, etc."
+                    value={formData.courseOfStudy === OTHER_COURSE_LABEL ? '' : formData.courseOfStudy}
+                    onChange={(e) => setFormData(prev => ({ ...prev, courseOfStudy: e.target.value }))}
+                    className="w-full px-3 py-2 rounded-xl border-2 border-emerald-400 dark:border-emerald-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs font-semibold focus:ring-2 focus:ring-emerald-500 outline-none"
+                  />
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                    Rubuta kowani fannin karatu da kayi ko da ba na electrical ba ne.
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Institution */}
@@ -832,9 +1146,9 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
               <input
                 type="text"
                 required
-                placeholder="e.g. Bayero University Kano / Kaduna Poly"
+                placeholder="e.g. Bayero University Kano / Kaduna Poly / ABU Zaria"
                 value={formData.institution}
-                onChange={(e) => setFormData({ ...formData, institution: e.target.value })}
+                onChange={(e) => setFormData(prev => ({ ...prev, institution: e.target.value }))}
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white text-xs font-semibold focus:ring-2 focus:ring-sky-500 outline-none"
               />
             </div>
@@ -848,21 +1162,35 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
                 type="text"
                 placeholder="e.g. 2018"
                 value={formData.graduationYear}
-                onChange={(e) => setFormData({ ...formData, graduationYear: e.target.value })}
+                onChange={(e) => setFormData(prev => ({ ...prev, graduationYear: e.target.value }))}
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white text-xs font-semibold focus:ring-2 focus:ring-sky-500 outline-none"
               />
             </div>
 
-            {/* Other Certifications */}
-            <div className="sm:col-span-2 space-y-1.5">
+            {/* Other Additional Qualifications / Accreditations */}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                Other Qualifications / Accreditations (Karatun Kari)
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. PGD Energy Studies, Advanced Diploma in IT"
+                value={formData.otherQualifications || ''}
+                onChange={(e) => setFormData(prev => ({ ...prev, otherQualifications: e.target.value }))}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white text-xs font-semibold focus:ring-2 focus:ring-sky-500 outline-none"
+              />
+            </div>
+
+            {/* Professional Certificates */}
+            <div className="space-y-1.5">
               <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
                 Professional Certificates (NSE, COREN, NEMSA, etc.)
               </label>
               <input
                 type="text"
-                placeholder="e.g. COREN Reg: R-54321 / NEMSA Certified Wireman"
+                placeholder="e.g. COREN Reg: R-54321 / NEMSA Certified Wireman / IEEE"
                 value={formData.professionalCertificates}
-                onChange={(e) => setFormData({ ...formData, professionalCertificates: e.target.value })}
+                onChange={(e) => setFormData(prev => ({ ...prev, professionalCertificates: e.target.value }))}
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white text-xs font-semibold focus:ring-2 focus:ring-sky-500 outline-none"
               />
             </div>
@@ -877,7 +1205,7 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
             </div>
             <div>
               <h3 className="font-display font-bold text-base text-slate-900 dark:text-white">
-                Electrical Professional Profile
+                Electrical &amp; Engineering Professional Profile
               </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 Industry occupation, specialization, and experience
@@ -888,34 +1216,102 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {/* Occupation */}
             <div className="space-y-1.5">
-              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
-                Current Occupation / Title <span className="text-red-500">*</span>
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                  Current Occupation / Title <span className="text-red-500">*</span>
+                </label>
+                {occupationSelectChoice === OTHER_OCCUPATION_LABEL && (
+                  <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950 px-2 py-0.5 rounded-md border border-amber-200 dark:border-amber-800">
+                    Custom Title
+                  </span>
+                )}
+              </div>
               <select
-                value={formData.occupation}
-                onChange={(e) => setFormData({ ...formData, occupation: e.target.value })}
+                value={occupationSelectChoice}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setOccupationSelectChoice(val);
+                  if (val === OTHER_OCCUPATION_LABEL) {
+                    if (OCCUPATION_ROLES.includes(formData.occupation)) {
+                      setFormData(prev => ({ ...prev, occupation: '' }));
+                    }
+                  } else {
+                    setFormData(prev => ({ ...prev, occupation: val }));
+                  }
+                }}
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white text-xs font-semibold focus:ring-2 focus:ring-sky-500 outline-none"
               >
                 {OCCUPATION_ROLES.map(r => (
                   <option key={r} value={r}>{r}</option>
                 ))}
               </select>
+
+              {/* Custom Occupation Input when "Other" is chosen */}
+              {occupationSelectChoice === OTHER_OCCUPATION_LABEL && (
+                <div className="space-y-1 mt-2 pt-2 border-t border-amber-100 dark:border-amber-900/60 animate-fadeIn">
+                  <label className="block text-[11px] font-bold text-amber-700 dark:text-amber-300">
+                    Specify Your Occupation / Title (Rubuta Sana'arka / Matsayin Aikinka) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Mechanical Project Engineer, Energy Auditor, etc."
+                    value={formData.occupation === OTHER_OCCUPATION_LABEL ? '' : formData.occupation}
+                    onChange={(e) => setFormData(prev => ({ ...prev, occupation: e.target.value }))}
+                    className="w-full px-3 py-2 rounded-xl border-2 border-amber-400 dark:border-amber-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs font-semibold focus:ring-2 focus:ring-amber-500 outline-none"
+                  />
+                </div>
+              )}
             </div>
 
             {/* Specialization */}
             <div className="space-y-1.5">
-              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
-                Primary Specialization <span className="text-red-500">*</span>
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                  Primary Specialization <span className="text-red-500">*</span>
+                </label>
+                {specSelectChoice === OTHER_SPECIALIZATION_LABEL && (
+                  <span className="text-[10px] font-bold text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-950 px-2 py-0.5 rounded-md border border-purple-200 dark:border-purple-800">
+                    Custom Specialization
+                  </span>
+                )}
+              </div>
               <select
-                value={formData.specialization}
-                onChange={(e) => setFormData({ ...formData, specialization: e.target.value })}
+                value={specSelectChoice}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setSpecSelectChoice(val);
+                  if (val === OTHER_SPECIALIZATION_LABEL) {
+                    if (SPECIALIZATIONS.includes(formData.specialization)) {
+                      setFormData(prev => ({ ...prev, specialization: '' }));
+                    }
+                  } else {
+                    setFormData(prev => ({ ...prev, specialization: val }));
+                  }
+                }}
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-white text-xs font-semibold focus:ring-2 focus:ring-sky-500 outline-none"
               >
                 {SPECIALIZATIONS.map(s => (
                   <option key={s} value={s}>{s}</option>
                 ))}
               </select>
+
+              {/* Custom Specialization Input when "Other" is chosen */}
+              {specSelectChoice === OTHER_SPECIALIZATION_LABEL && (
+                <div className="space-y-1 mt-2 pt-2 border-t border-purple-100 dark:border-purple-900/60 animate-fadeIn">
+                  <label className="block text-[11px] font-bold text-purple-700 dark:text-purple-300">
+                    Specify Your Specialization (Rubuta Fannin Kwarewarka) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. HVAC Systems, Electro-Mechanical Automation, etc."
+                    value={formData.specialization === OTHER_SPECIALIZATION_LABEL ? '' : formData.specialization}
+                    onChange={(e) => setFormData(prev => ({ ...prev, specialization: e.target.value }))}
+                    className="w-full px-3 py-2 rounded-xl border-2 border-purple-400 dark:border-purple-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs font-semibold focus:ring-2 focus:ring-purple-500 outline-none"
+                  />
+                </div>
+              )}
             </div>
 
             {/* Years of Experience */}

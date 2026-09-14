@@ -34,6 +34,8 @@ export interface MembershipCardHistoryItem {
 export interface Member {
   id: string;
   membershipId?: string; // Assigned manually by Admin/Super Admin only
+  existingMembershipId?: string; // Member-submitted existing ID during registration (pending admin approval)
+  requestedMembershipId?: string; // Alias for requested / existing membership ID
   verificationCode?: string; // Public verification code e.g. VER-XXXXXXXX
   applicationReference?: string;
   firstName?: string;

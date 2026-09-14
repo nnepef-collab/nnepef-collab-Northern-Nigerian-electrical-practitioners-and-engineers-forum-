@@ -26,14 +26,21 @@ export const NORTHERN_STATES = [
 ];
 
 export const SPECIALIZATIONS = [
+  'Solar PV Installation & Inverter Systems',
+  'CCTV Camera & Surveillance Systems Installation',
+  'Satellite Dish & Cable TV Installation (Setlite)',
+  'Fire Alarm, Detection & Safety Systems',
+  'Building Electrical Wiring & Conduit Installation',
   'Power Systems & Smart Grid Engineering',
-  'Renewable Energy & Solar PV Installation',
   'High Voltage Transmission & Distribution',
   'Industrial Electrical Automation & Controls',
-  'Building Electrical Systems & Lighting Design',
-  'Electrical Safety, Code Inspection & Auditing',
   'Transformer Maintenance & Substation Design',
-  'Telecommunications & SCADA Networks'
+  'Telecommunications & SCADA Networks',
+  'Electrical Safety, Code Inspection & Auditing',
+  'Instrumentation, Electronics & IT Systems',
+  'Public Administration & Technical Policy',
+  'Allied Engineering & Multidisciplinary Technical Services',
+  'Other Technical Specialization (Specify / Rubuta Dakanka)'
 ];
 
 export const initialMembers: Member[] = [];

@@ -3,7 +3,7 @@ import { Member, ForumSettings } from '../types';
 import { Printer, Download, X, CheckCircle2, ShieldCheck, QrCode, Building2, Calendar, Award, Loader2 } from 'lucide-react';
 import { OFFICIAL_NNEPEF_LOGO } from '../constants/logo';
 import { OFFICIAL_SECRETARY_SIGNATURE, OFFICIAL_SECRETARY_SIGNATURE_URL } from '../constants/signature';
-import { downloadApprovalSlipPdf } from '../services/pdfService';
+import { downloadApprovalSlipPdf, downloadMemberProfilePdf } from '../services/pdfService';
 
 interface OfficialApprovalSlipModalProps {
   member: Member | null;
@@ -19,6 +19,7 @@ export const OfficialApprovalSlipModal: React.FC<OfficialApprovalSlipModalProps>
   if (!member) return null;
 
   const [isDownloading, setIsDownloading] = useState(false);
+  const [selectedPdfType, setSelectedPdfType] = useState<'slip' | 'biodata' | 'both'>('slip');
 
   const handlePrint = () => {
     window.print();
@@ -27,7 +28,15 @@ export const OfficialApprovalSlipModal: React.FC<OfficialApprovalSlipModalProps>
   const handleDownloadPdf = async () => {
     setIsDownloading(true);
     try {
-      await downloadApprovalSlipPdf(member, settings);
+      if (selectedPdfType === 'slip') {
+        await downloadApprovalSlipPdf(member, settings);
+      } else if (selectedPdfType === 'biodata') {
+        await downloadMemberProfilePdf(member, settings);
+      } else if (selectedPdfType === 'both') {
+        await downloadApprovalSlipPdf(member, settings);
+        await new Promise(resolve => setTimeout(resolve, 600));
+        await downloadMemberProfilePdf(member, settings);
+      }
     } catch (e) {
       console.warn('Direct PDF download fallback to print:', e);
       window.print();
@@ -55,20 +64,41 @@ export const OfficialApprovalSlipModal: React.FC<OfficialApprovalSlipModalProps>
             <ShieldCheck className="w-5 h-5 text-emerald-400" />
             <span className="font-bold text-sm">Official N-NEPEF 2020 Membership Approval Slip</span>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-slate-400 font-mono hidden sm:inline mr-1">Choose Action:</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-slate-400 font-mono hidden sm:inline mr-1">Choose Document:</span>
+            
+            {/* Select Dropdown */}
+            <select
+              value={selectedPdfType}
+              onChange={(e) => setSelectedPdfType(e.target.value as 'slip' | 'biodata' | 'both')}
+              className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-750 text-white border border-slate-700 text-xs font-bold outline-none cursor-pointer focus:ring-2 focus:ring-emerald-500 shadow-xs"
+              title="Select document type to download"
+            >
+              <option value="slip">Official Slip (PDF)</option>
+              <option value="biodata">Full Bio-Data Form (PDF)</option>
+              <option value="both">Both (Slip & Bio-Data)</option>
+            </select>
+
             <button
               onClick={handleDownloadPdf}
               disabled={isDownloading}
               className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-75 text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow cursor-pointer active:scale-95"
-              title="Download Official Slip as PDF file"
+              title="Download selected official PDF document"
             >
               {isDownloading ? (
                 <Loader2 className="w-4 h-4 animate-spin text-emerald-200" />
               ) : (
                 <Download className="w-4 h-4 text-emerald-200" />
               )}
-              <span>{isDownloading ? 'Downloading PDF...' : 'Download PDF'}</span>
+              <span>
+                {isDownloading
+                  ? 'Generating...'
+                  : selectedPdfType === 'slip'
+                    ? 'Download Slip'
+                    : selectedPdfType === 'biodata'
+                      ? 'Download Bio-Data'
+                      : 'Download Both'}
+              </span>
             </button>
             <button
               onClick={handlePrint}
@@ -179,6 +209,11 @@ export const OfficialApprovalSlipModal: React.FC<OfficialApprovalSlipModalProps>
                 <p className="font-mono font-extrabold text-sm text-[#0A2E73] bg-sky-50 px-2 py-0.5 rounded border border-sky-200 inline-block">
                   {memberIdDisplay}
                 </p>
+                {member.status === 'pending' && (member.existingMembershipId || member.requestedMembershipId) && (
+                  <p className="text-[10px] text-amber-600 font-mono">
+                    Submitted ID: {member.existingMembershipId || member.requestedMembershipId} (Pending Approval)
+                  </p>
+                )}
               </div>
 
               <div className="space-y-0.5">
@@ -204,8 +239,11 @@ export const OfficialApprovalSlipModal: React.FC<OfficialApprovalSlipModalProps>
               </div>
 
               <div className="space-y-0.5">
-                <span className="text-[10px] font-mono text-slate-500 uppercase">Registered Phone</span>
+                <span className="text-[10px] font-mono text-slate-500 uppercase">Contact Phone {member.email ? '& Email' : ''}</span>
                 <p className="font-mono font-bold text-slate-800">{member.phone}</p>
+                {member.email && (
+                  <p className="text-[11px] font-mono text-slate-600 truncate" title={member.email}>{member.email}</p>
+                )}
               </div>
             </div>
           </div>
@@ -229,6 +267,30 @@ export const OfficialApprovalSlipModal: React.FC<OfficialApprovalSlipModalProps>
               <span className="font-semibold text-slate-800">{member.approvedBy || 'National Secretariat'}</span>
             </div>
           </div>
+
+          {/* Academic & Professional Credentials Row */}
+          {(member.highestQualification || member.qualification || member.courseOfStudy || member.institution) && (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-50/80 p-3 rounded-xl border border-slate-200 text-[11px]">
+              <div>
+                <span className="text-[9px] font-mono text-slate-500 uppercase block">Highest Qualification</span>
+                <span className="font-semibold text-slate-900 truncate block" title={member.highestQualification || member.qualification}>
+                  {member.highestQualification || member.qualification || '—'}
+                </span>
+              </div>
+              <div>
+                <span className="text-[9px] font-mono text-slate-500 uppercase block">Course / Field of Study</span>
+                <span className="font-semibold text-slate-900 truncate block" title={member.courseOfStudy}>
+                  {member.courseOfStudy || '—'}
+                </span>
+              </div>
+              <div>
+                <span className="text-[9px] font-mono text-slate-500 uppercase block">Institution / School</span>
+                <span className="font-semibold text-slate-900 truncate block" title={member.institution}>
+                  {member.institution || '—'}{member.graduationYear ? ` (${member.graduationYear})` : ''}
+                </span>
+              </div>
+            </div>
+          )}
 
           {/* Official Verification & Secretary General Signature Block */}
           <div className="pt-4 border-t-2 border-slate-900 grid grid-cols-1 sm:grid-cols-3 gap-6 items-end">

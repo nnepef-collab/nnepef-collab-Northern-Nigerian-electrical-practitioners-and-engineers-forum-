@@ -853,6 +853,7 @@ export default function App() {
             <DocumentsView
               documents={documents}
               setCurrentView={setCurrentView}
+              isAdmin={isAdminLoggedIn}
             />
           )}
 

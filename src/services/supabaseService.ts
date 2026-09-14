@@ -233,26 +233,6 @@ export async function fetchNextAvailableMembershipIdFromSupabase(
     }
   }
 
-  // Also query server API if available to ensure latest list
-  try {
-    const res = await fetch(getApiEndpoint('/api/members'), { headers: getApiHeaders() });
-    if (res.ok) {
-      const json = await res.json();
-      if (json.success && Array.isArray(json.data)) {
-        for (const row of json.data) {
-          const idStr = String(row.membershipId || row.membership_id || '').trim().toUpperCase();
-          if (idStr) {
-            existingIds.add(idStr);
-            const num = extractSequenceNumberFromMembershipId(idStr);
-            if (num !== null) {
-              parsedNumbers.push(num);
-            }
-          }
-        }
-      }
-    }
-  } catch (e) {}
-
   // Determine the highest sequence number present in Supabase
   const highestSequence = parsedNumbers.length > 0 ? Math.max(...parsedNumbers) : 0;
   let candidateNum = Math.max(1, highestSequence + 1);
@@ -477,6 +457,8 @@ export function mapSupabaseRowToMember(row: any): Member {
     approvedBy: row.approved_by || row.approvedBy || undefined,
     rejectedBy: row.rejected_by || row.rejectedBy || undefined,
     rejectionReason: row.rejection_reason || row.rejectionReason || undefined,
+    existingMembershipId: row.existing_membership_id || row.existingMembershipId || row.requested_membership_id || row.requestedMembershipId || (qualDetails as any)?.existingMembershipId || (row.notes && String(row.notes).match(/\[Existing Member ID:\s*([^\]]+)\]/i)?.[1]?.trim()) || undefined,
+    requestedMembershipId: row.existing_membership_id || row.existingMembershipId || row.requested_membership_id || row.requestedMembershipId || (qualDetails as any)?.existingMembershipId || (row.notes && String(row.notes).match(/\[Existing Member ID:\s*([^\]]+)\]/i)?.[1]?.trim()) || undefined,
     notes: row.notes || row.adminNotes || undefined,
     approvalNotificationSent: Boolean(row.approval_notification_sent || row.approvalNotificationSent),
     approvalNotificationSentAt: row.approval_notification_sent_at || row.approvalNotificationSentAt || undefined,
@@ -923,11 +905,11 @@ export async function saveMemberToSupabase(member: Member, options?: { isRegistr
     }
   }
 
-  // Safely ensure membership ID or reference is formatted
+  // Use the admin's explicitly provided Manual Membership ID as authoritative. Never override manual input!
   let finalMembershipId = member.membershipId ? member.membershipId.trim() : '';
-
-  if (member.status === 'approved' && (!finalMembershipId || !finalMembershipId.startsWith('NNEPEF/'))) {
-    finalMembershipId = await fetchNextAvailableMembershipIdFromSupabase(member.state);
+  if (member.status === 'approved' && !finalMembershipId) {
+    const stateCode = member.state ? member.state.trim().slice(0, 2).toUpperCase() : 'KN';
+    finalMembershipId = `NNEPEF/${stateCode}/${Math.floor(1000 + Math.random() * 9000)}`;
   }
 
   const appRef = member.applicationReference || `APP-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
@@ -935,9 +917,19 @@ export async function saveMemberToSupabase(member: Member, options?: { isRegistr
 
   // Package education details cleanly using standard parser so school info is NEVER lost
   const educationDetails = parseEducationDetails(member);
+  const existingId = (member.existingMembershipId || member.requestedMembershipId)?.trim();
+  if (existingId) {
+    (educationDetails as any).existingMembershipId = existingId;
+  }
 
   // Package next of kin cleanly using standard parser so next of kin info is NEVER lost
   const nextOfKinObj = parseNextOfKin(member.nextOfKin, normalizedPhone);
+
+  const existingNotes = member.notes ? String(member.notes).trim() : '';
+  const existingIdNote = existingId ? `[Existing Member ID: ${existingId}]` : '';
+  const mergedNotes = existingIdNote && !existingNotes.includes(existingId)
+    ? `${existingIdNote} ${existingNotes}`.trim()
+    : (existingNotes || null);
 
   // Construct clean database payload strictly matching public.members table columns
   const dbPayload: Record<string, any> = {
@@ -971,6 +963,7 @@ export async function saveMemberToSupabase(member: Member, options?: { isRegistr
     updated_at: new Date().toISOString()
   };
 
+  if (mergedNotes) dbPayload.notes = mergedNotes;
   if (finalMembershipId) dbPayload.membership_id = finalMembershipId;
   if (member.expiryDate) dbPayload.expiry_date = member.expiryDate;
   if (member.approvedBy || member.status === 'approved') dbPayload.approved_by = member.approvedBy || 'Super Admin Secretariat';
@@ -983,6 +976,9 @@ export async function saveMemberToSupabase(member: Member, options?: { isRegistr
     nin: normalizedNin,
     ninNumber: normalizedNin,
     membershipId: finalMembershipId || '',
+    existingMembershipId: existingId || undefined,
+    requestedMembershipId: existingId || undefined,
+    notes: mergedNotes || undefined,
     verificationCode: verCode,
     applicationReference: appRef,
     institution: educationDetails.institution,

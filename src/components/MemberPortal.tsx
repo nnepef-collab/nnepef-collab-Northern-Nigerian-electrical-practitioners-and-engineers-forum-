@@ -9,7 +9,7 @@ import { hashPassword } from '../utils/passwordUtils';
 import { signOutUser } from '../services/supabaseAuthService';
 import { fetchApprovedMemberById, isSupabaseConfigured, savePaymentToSupabase } from '../services/supabaseService';
 import { handleImageError, getValidImageUrl, downloadFileSafely } from '../utils/imageHelpers';
-import { downloadApprovalSlipPdf } from '../services/pdfService';
+import { downloadApprovalSlipPdf, downloadMemberProfilePdf } from '../services/pdfService';
 import { OFFICIAL_NNEPEF_LOGO } from '../constants/logo';
 import { OFFICIAL_SECRETARY_SIGNATURE } from '../constants/signature';
 import { safeMergeMember, parseNextOfKin, parseEducationDetails } from '../utils/memberHelpers';
@@ -40,8 +40,12 @@ import {
   FileCheck,
   Printer,
   Loader2,
-  GraduationCap
+  GraduationCap,
+  BookOpen,
+  Lock,
+  Eye
 } from 'lucide-react';
+import { ConstitutionReaderModal } from './ConstitutionReaderModal';
 
 interface MemberPortalProps {
   currentUser: Member;
@@ -73,9 +77,32 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
   const [activeTab, setActiveTab] = useState<'dashboard' | 'id-card' | 'approval-slip' | 'profile' | 'renew-card' | 'events' | 'announcements' | 'payments' | 'downloads' | 'support'>('dashboard');
   const [showSlipModal, setShowSlipModal] = useState(false);
   const [isDownloadingSlipPdf, setIsDownloadingSlipPdf] = useState(false);
+  const [selectedSlipPdfType, setSelectedSlipPdfType] = useState<'slip' | 'biodata' | 'both'>('slip');
   const [isEditingProfile, setIsEditingProfile] = useState(false);
+
+  const handleDownloadSelectedPortalPdf = async () => {
+    setIsDownloadingSlipPdf(true);
+    try {
+      if (selectedSlipPdfType === 'slip') {
+        await downloadApprovalSlipPdf(currentUser, settings);
+      } else if (selectedSlipPdfType === 'biodata') {
+        await downloadMemberProfilePdf(currentUser, settings);
+      } else if (selectedSlipPdfType === 'both') {
+        await downloadApprovalSlipPdf(currentUser, settings);
+        await new Promise(resolve => setTimeout(resolve, 600));
+        await downloadMemberProfilePdf(currentUser, settings);
+      }
+    } catch (e) {
+      console.warn('PDF download error:', e);
+      setShowSlipModal(true);
+    } finally {
+      setIsDownloadingSlipPdf(false);
+    }
+  };
   const [isSyncingWithSupabase, setIsSyncingWithSupabase] = useState(false);
   const [lastSyncedTime, setLastSyncedTime] = useState<string | null>(null);
+  const [showConstitutionModal, setShowConstitutionModal] = useState(false);
+  const [constitutionNotice, setConstitutionNotice] = useState<string | null>(null);
 
   const slipLogo = settings?.logoUrl && settings.logoUrl.trim() !== '' && settings.logoUrl !== '/logo.png'
     ? settings.logoUrl
@@ -413,30 +440,40 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
               <p className="text-xs text-slate-500">Certified N-NEPEF 2020 credential bearing the authentic Secretary General digital endorsement</p>
             </div>
             <div className="flex flex-wrap items-center gap-2.5">
-              <span className="text-xs text-slate-500 font-mono hidden sm:inline mr-1">Choose Action:</span>
+              <span className="text-xs text-slate-500 font-mono hidden sm:inline mr-1">Choose Document:</span>
+              
+              <select
+                value={selectedSlipPdfType}
+                onChange={(e) => setSelectedSlipPdfType(e.target.value as 'slip' | 'biodata' | 'both')}
+                className="px-3 py-2.5 rounded-xl bg-white dark:bg-slate-800 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 text-xs font-bold outline-none cursor-pointer focus:ring-2 focus:ring-emerald-500 shadow-xs"
+                title="Select document type to download"
+              >
+                <option value="slip">Official Slip (PDF)</option>
+                <option value="biodata">Bio-Data Form (PDF)</option>
+                <option value="both">Both Documents (PDF)</option>
+              </select>
+
               <button
                 type="button"
-                onClick={async () => {
-                  setIsDownloadingSlipPdf(true);
-                  try {
-                    await downloadApprovalSlipPdf(currentUser, settings);
-                  } catch (e) {
-                    console.warn(e);
-                    setShowSlipModal(true);
-                  } finally {
-                    setIsDownloadingSlipPdf(false);
-                  }
-                }}
+                onClick={handleDownloadSelectedPortalPdf}
                 disabled={isDownloadingSlipPdf}
                 className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-75 text-white font-bold text-xs flex items-center gap-2 shadow-md transition-all cursor-pointer active:scale-95"
-                title="Download Official Slip as PDF document"
+                title="Download selected official document as PDF"
               >
                 {isDownloadingSlipPdf ? (
                   <Loader2 className="w-4 h-4 animate-spin text-emerald-200" />
                 ) : (
                   <Download className="w-4 h-4 text-emerald-200" />
                 )}
-                <span>{isDownloadingSlipPdf ? 'Downloading PDF...' : 'Download PDF Slip'}</span>
+                <span>
+                  {isDownloadingSlipPdf
+                    ? 'Downloading PDF...'
+                    : selectedSlipPdfType === 'slip'
+                      ? 'Download Slip PDF'
+                      : selectedSlipPdfType === 'biodata'
+                        ? 'Download Bio-Data PDF'
+                        : 'Download Both PDFs'}
+                </span>
               </button>
               <button
                 type="button"
@@ -595,20 +632,21 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
                 <span className="text-[11px] text-slate-500 dark:text-slate-400 font-mono">
                   Official Certified Membership Document
                 </span>
-                <div className="flex items-center gap-3 w-full sm:w-auto">
+                <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
+                  <select
+                    value={selectedSlipPdfType}
+                    onChange={(e) => setSelectedSlipPdfType(e.target.value as 'slip' | 'biodata' | 'both')}
+                    className="px-3 py-2.5 rounded-xl bg-white dark:bg-slate-800 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 text-xs font-bold outline-none cursor-pointer focus:ring-2 focus:ring-emerald-500 shadow-xs"
+                    title="Select document type to download"
+                  >
+                    <option value="slip">Official Slip (PDF)</option>
+                    <option value="biodata">Bio-Data Form (PDF)</option>
+                    <option value="both">Both Documents (PDF)</option>
+                  </select>
+
                   <button
                     type="button"
-                    onClick={async () => {
-                      setIsDownloadingSlipPdf(true);
-                      try {
-                        await downloadApprovalSlipPdf(currentUser, settings);
-                      } catch (e) {
-                        console.warn(e);
-                        setShowSlipModal(true);
-                      } finally {
-                        setIsDownloadingSlipPdf(false);
-                      }
-                    }}
+                    onClick={handleDownloadSelectedPortalPdf}
                     disabled={isDownloadingSlipPdf}
                     className="flex-1 sm:flex-initial px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-75 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-md transition-all cursor-pointer active:scale-95"
                   >
@@ -617,7 +655,15 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
                     ) : (
                       <Download className="w-4 h-4 text-emerald-200" />
                     )}
-                    <span>{isDownloadingSlipPdf ? 'Downloading PDF...' : 'Download PDF Slip'}</span>
+                    <span>
+                      {isDownloadingSlipPdf
+                        ? 'Downloading PDF...'
+                        : selectedSlipPdfType === 'slip'
+                          ? 'Download Slip PDF'
+                          : selectedSlipPdfType === 'biodata'
+                            ? 'Download Bio-Data PDF'
+                            : 'Download Both PDFs'}
+                    </span>
                   </button>
                   <button
                     type="button"
@@ -917,23 +963,83 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
       {/* TAB 7: DOWNLOADS */}
       {activeTab === 'downloads' && (
         <div className="glass-card p-8 rounded-3xl border border-slate-200 dark:border-slate-800 space-y-6 shadow-xl">
-          <h3 className="font-display font-bold text-xl text-slate-900 dark:text-white">Official Documents &amp; Publications</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {documents.map((doc) => (
-              <div key={doc.id} className="p-5 bg-slate-50 dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <span className="text-[10px] font-bold text-sky-600 dark:text-sky-400 uppercase">{doc.category} • {doc.fileSize}</span>
-                  <h4 className="font-bold text-xs text-slate-900 dark:text-white">{doc.title}</h4>
-                </div>
-                <button
-                  onClick={(e) => downloadFileSafely(doc.fileUrl, `${doc.title.replace(/\s+/g, '_')}.pdf`, e)}
-                  className="px-3 py-2 rounded-xl bg-[#0A2E73] text-white text-xs font-bold flex items-center gap-1 hover:bg-sky-800 transition-colors"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Download</span>
-                </button>
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <h3 className="font-display font-bold text-xl text-slate-900 dark:text-white">Official Documents &amp; Publications</h3>
+              <p className="text-xs text-slate-500">Access official circulars, standard guidelines, and read the Forum Constitution online.</p>
+            </div>
+          </div>
+
+          {constitutionNotice && (
+            <div className="p-3 bg-amber-50 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-800 rounded-xl text-xs text-amber-800 dark:text-amber-300 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Lock className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>{constitutionNotice}</span>
               </div>
-            ))}
+              <button
+                onClick={() => {
+                  setConstitutionNotice(null);
+                  setShowConstitutionModal(true);
+                }}
+                className="px-2.5 py-1 bg-amber-600 text-white font-bold rounded-lg ml-2"
+              >
+                Karanta Online
+              </button>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {documents.map((doc) => {
+              const isConst = doc.category === 'Constitution';
+              return (
+                <div key={doc.id} className="p-5 bg-slate-50 dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-bold text-sky-600 dark:text-sky-400 uppercase">{doc.category} • {doc.fileSize}</span>
+                      {isConst && (
+                        <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 border border-amber-400/30">
+                          Admin Download
+                        </span>
+                      )}
+                    </div>
+                    <h4 className="font-bold text-xs text-slate-900 dark:text-white">{doc.title}</h4>
+                  </div>
+                  
+                  <div className="flex items-center gap-2 shrink-0">
+                    {isConst ? (
+                      <>
+                        <button
+                          onClick={() => setShowConstitutionModal(true)}
+                          className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold flex items-center gap-1 hover:bg-emerald-700 transition-colors shadow"
+                          title="Karanta Kundin Tsarin Mulki Online"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>Karanta</span>
+                        </button>
+                        <button
+                          onClick={() => {
+                            setConstitutionNotice('Saukewa ta Admin Ne Kadai: Kundin Tsarin Mulki kyauta ne ga kowa ya duba ya karanta online. Saukar da asalin fayil an kebe shi ga Admin.');
+                            setTimeout(() => setConstitutionNotice(null), 5000);
+                          }}
+                          className="px-2.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-500 text-xs font-bold border border-slate-300 dark:border-slate-700"
+                          title="Saukewa ta Admin ne kadai"
+                        >
+                          <Lock className="w-3.5 h-3.5 text-amber-500" />
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={(e) => downloadFileSafely(doc.fileUrl, `${doc.title.replace(/\s+/g, '_')}.pdf`, e)}
+                        className="px-3 py-2 rounded-xl bg-[#0A2E73] text-white text-xs font-bold flex items-center gap-1 hover:bg-sky-800 transition-colors"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Download</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -1026,6 +1132,14 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
           onClose={() => setShowSlipModal(false)}
         />
       )}
+
+      {/* OFFICIAL CONSTITUTION READER MODAL (MEMBER VIEW: READ-ONLY, ADMIN-ONLY DOWNLOAD) */}
+      <ConstitutionReaderModal
+        isOpen={showConstitutionModal}
+        onClose={() => setShowConstitutionModal(false)}
+        isAdmin={false}
+        constitutionDoc={documents.find(d => d.category === 'Constitution')}
+      />
 
     </div>
   );

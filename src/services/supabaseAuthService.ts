@@ -257,10 +257,30 @@ export async function signInUser(identifier: string, password: string): Promise<
   const foundMember = allMembers.find(m => 
     (m.email && m.email.toLowerCase() === cleanInput) ||
     (m.membershipId && m.membershipId.toLowerCase() === cleanInput) ||
+    (m.existingMembershipId && m.existingMembershipId.toLowerCase() === cleanInput) ||
+    (m.requestedMembershipId && m.requestedMembershipId.toLowerCase() === cleanInput) ||
     (m.phone && m.phone.replace(/[\s\-\+]/g, '') === identifier.replace(/[\s\-\+]/g, ''))
   );
 
   if (foundMember) {
+    if (foundMember.status === 'pending') {
+      return {
+        success: false,
+        error: 'Lambar ID ko takardunku na jiran amincewar Admin ne (Pending Admin Approval). Ba za ta fara aiki ba sai Admin ya tantance kuma ya amince da ita (Approved).'
+      };
+    }
+    if (foundMember.status === 'rejected') {
+      return {
+        success: false,
+        error: `An ki amincewa da wannan aikace-aikacen: ${foundMember.rejectionReason || 'Ba a cika kaidoji ba'}.`
+      };
+    }
+    if (foundMember.status === 'suspended') {
+      return {
+        success: false,
+        error: 'Wannan asusun yana dakatarwa (Suspended). Tuntubi sakatariya.'
+      };
+    }
     return {
       success: true,
       user: foundMember,

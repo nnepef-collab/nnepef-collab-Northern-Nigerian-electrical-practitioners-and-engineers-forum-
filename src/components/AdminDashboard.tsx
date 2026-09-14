@@ -109,8 +109,12 @@ import {
   CreditCard,
   FileCheck,
   GraduationCap,
-  LogOut
+  LogOut,
+  BookOpen,
+  Loader2,
+  Image as ImageIcon
 } from 'lucide-react';
+import { ConstitutionReaderModal } from './ConstitutionReaderModal';
 import { parseEducationDetails } from '../utils/memberHelpers';
 
 interface AdminDashboardProps {
@@ -225,11 +229,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [stateFilter, setStateFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
+  const [isDownloadingPdfRegister, setIsDownloadingPdfRegister] = useState(false);
   const [showBulkExportModal, setShowBulkExportModal] = useState(false);
   const [bulkExportScope, setBulkExportScope] = useState<'all' | 'filtered' | 'selected' | 'approved' | 'pending'>('all');
 
   // Editing & Deleting Member Modal State
   const [editingMember, setEditingMember] = useState<Member | null>(null);
+  const [isSavingMemberEdit, setIsSavingMemberEdit] = useState(false);
   const [memberToDelete, setMemberToDelete] = useState<Member | null>(null);
   const [viewingReceiptMember, setViewingReceiptMember] = useState<Member | null>(null);
   const [approvingMember, setApprovingMember] = useState<Member | null>(null);
@@ -495,15 +501,26 @@ CREATE POLICY "Admin Full Access Payments"
     tags: 'engineering, power, nigeria',
   });
 
-  // Documents Modal State
+  // Documents & Constitution Modal State
   const [showAddDocument, setShowAddDocument] = useState(false);
   const [newDocument, setNewDocument] = useState({
     title: '',
     category: 'Circular' as const,
     fileUrl: '#',
+    fileName: '',
     fileSize: '1.5 MB',
     format: 'PDF' as const,
     minRole: 'all' as const,
+  });
+
+  const [showConstitutionModal, setShowConstitutionModal] = useState(false);
+  const [showConstitutionUpload, setShowConstitutionUpload] = useState(false);
+  const [constitutionForm, setConstitutionForm] = useState({
+    title: 'N-NEPEF Constitution & Bye-Laws (2020 Revised Edition)',
+    fileUrl: '',
+    fileName: 'N-NEPEF_Constitution_2020.pdf',
+    fileSize: '2.4 MB',
+    format: 'PDF' as const
   });
 
   // Messages Inbox State
@@ -846,16 +863,14 @@ CREATE POLICY "Admin Full Access Payments"
   };
 
   // Member Action Handlers
-  const handleOpenApproveModal = async (member: Member) => {
-    let suggestedId = member.membershipId;
-    if (!suggestedId || !suggestedId.startsWith('NNEPEF/')) {
-      try {
-        suggestedId = await fetchNextAvailableMembershipIdFromSupabase(member.state);
-      } catch (e) {
-        suggestedId = 'NNEPEF/KN/0001';
-      }
-    }
-    setAssignedMembershipId(suggestedId);
+  const handleOpenApproveModal = (member: Member) => {
+    // Open immediately with zero network delay
+    const statePrefix = member.state ? member.state.trim().slice(0, 2).toUpperCase() : 'KN';
+    const submittedId = (member.existingMembershipId || member.requestedMembershipId)?.trim();
+    const manualId = member.membershipId && member.membershipId.trim()
+      ? member.membershipId.trim()
+      : (submittedId || `NNEPEF/${statePrefix}/`);
+    setAssignedMembershipId(manualId);
     setAssignedPosition(member.position || 'Practicing Member');
     setApprovalError('');
     setApprovingMember(member);
@@ -865,7 +880,7 @@ CREATE POLICY "Admin Full Access Payments"
     if (!approvingMember) return;
     const cleanId = assignedMembershipId.trim().toUpperCase();
     if (!cleanId) {
-      setApprovalError('Membership ID is required before approval.');
+      setApprovalError('Shigar da lambar memba (Manual Membership ID is required).');
       return;
     }
 
@@ -899,24 +914,31 @@ CREATE POLICY "Admin Full Access Payments"
         approvalNotificationSentAt: now.toISOString(),
       };
 
-      // Save directly to Supabase PostgreSQL single source of truth
-      await saveMemberToSupabase(updatedMember);
-
-      // Refresh immediately from Supabase
-      const freshMembers = await fetchMembersFromSupabase();
-      onUpdateMembers(freshMembers);
-      onAddAuditLog('MEMBER_APPROVE', `Approved member ${updatedMember.fullName} & assigned ID: ${cleanId}`);
-
-      // Dispatch real welcome notification
-      await dispatchAutomaticWelcomeNotification(updatedMember, cleanId);
-
-      const approvedFinal = freshMembers.find(m => m.id === updatedMember.id) || updatedMember;
+      // 1. Instant optimistic UI update: Update members list and launch ID Card immediately!
+      const updatedMembersList = members.map(m => m.id === updatedMember.id ? updatedMember : m);
+      onUpdateMembers(updatedMembersList);
       setApprovingMember(null);
-      
-      // Automatically launch the newly generated Membership ID Card modal
-      setGeneratedCardModalMember(approvedFinal);
+      setGeneratedCardModalMember(updatedMember);
+      onAddAuditLog('MEMBER_APPROVE', `Approved member ${updatedMember.fullName} & assigned Manual ID: ${cleanId}`);
+
+      // 2. Persist to Supabase in parallel background
+      saveMemberToSupabase(updatedMember, { isRegistration: false })
+        .then(async () => {
+          const fresh = await fetchMembersFromSupabase().catch(() => null);
+          if (fresh && fresh.length > 0) {
+            onUpdateMembers(fresh);
+          }
+        })
+        .catch(err => {
+          console.error('Background save to Supabase note:', err);
+        });
+
+      // 3. Dispatch real welcome notification in non-blocking background
+      dispatchAutomaticWelcomeNotification(updatedMember, cleanId).catch(notifErr => {
+        console.warn('Welcome notification background delivery notice:', notifErr);
+      });
     } catch (err: any) {
-      setApprovalError(err?.message || 'Failed to approve member in Supabase. Please check connection and try again.');
+      setApprovalError(err?.message || 'Failed to approve member. Please try again.');
     } finally {
       setIsApproving(false);
     }
@@ -1049,9 +1071,11 @@ CREATE POLICY "Admin Full Access Payments"
       rejectedBy: 'Super Admin Secretariat',
       rejectionReason: reason || 'Application details / document verification issue'
     };
-    await saveMemberToSupabase(updated);
-    const freshMembers = await fetchMembersFromSupabase();
-    onUpdateMembers(freshMembers);
+    onUpdateMembers(members.map((m) => (m.id === updated.id ? updated : m)));
+    await saveMemberToSupabase(updated, { isRegistration: false });
+    fetchMembersFromSupabase().then((fresh) => {
+      if (fresh && fresh.length > 0) onUpdateMembers(fresh);
+    }).catch(() => {});
     onAddAuditLog('MEMBER_REJECT', `Rejected member ID ${id} (${target.fullName})`);
 
     // Trigger Automatic Registration Rejected Notification
@@ -1073,9 +1097,11 @@ CREATE POLICY "Admin Full Access Payments"
     const target = members.find((m) => m.id === id);
     if (!target) return;
     const updated: Member = { ...target, status: 'suspended' };
-    await saveMemberToSupabase(updated);
-    const freshMembers = await fetchMembersFromSupabase();
-    onUpdateMembers(freshMembers);
+    onUpdateMembers(members.map((m) => (m.id === updated.id ? updated : m)));
+    await saveMemberToSupabase(updated, { isRegistration: false });
+    fetchMembersFromSupabase().then((fresh) => {
+      if (fresh && fresh.length > 0) onUpdateMembers(fresh);
+    }).catch(() => {});
     onAddAuditLog('MEMBER_SUSPEND', `Suspended member ID ${id} (${target.fullName})`);
 
     // Trigger Automatic Membership Suspended Notification
@@ -1097,9 +1123,11 @@ CREATE POLICY "Admin Full Access Payments"
     const target = members.find((m) => m.id === id);
     if (!target) return;
     const updated: Member = { ...target, status: 'approved' };
-    await saveMemberToSupabase(updated);
-    const freshMembers = await fetchMembersFromSupabase();
-    onUpdateMembers(freshMembers);
+    onUpdateMembers(members.map((m) => (m.id === updated.id ? updated : m)));
+    await saveMemberToSupabase(updated, { isRegistration: false });
+    fetchMembersFromSupabase().then((fresh) => {
+      if (fresh && fresh.length > 0) onUpdateMembers(fresh);
+    }).catch(() => {});
     onAddAuditLog('MEMBER_RESTORE', `Restored member ID ${id} (${target.fullName})`);
 
     // Trigger Automatic Membership Reactivated Notification
@@ -1156,6 +1184,56 @@ CREATE POLICY "Admin Full Access Payments"
     }
   };
 
+  const handleSaveMemberEdit = async () => {
+    if (!editingMember) return;
+    if (!editingMember.fullName?.trim()) {
+      alert('Member full name is required.');
+      return;
+    }
+
+    setIsSavingMemberEdit(true);
+
+    try {
+      const updatedMember: Member = {
+        ...editingMember,
+        fullName: editingMember.fullName.trim(),
+        membershipId: editingMember.membershipId ? editingMember.membershipId.trim().toUpperCase() : '',
+        phone: editingMember.phone ? editingMember.phone.trim() : '',
+        email: editingMember.email ? editingMember.email.trim() : '',
+        nin: (editingMember.nin || editingMember.ninNumber || '').trim(),
+        ninNumber: (editingMember.nin || editingMember.ninNumber || '').trim(),
+      };
+
+      // 1. Instant local state update for immediate UI responsiveness
+      const updatedList = members.map((m) => (m.id === updatedMember.id ? updatedMember : m));
+      onUpdateMembers(updatedList);
+      onAddAuditLog('MEMBER_EDIT', `Updated information for member ${updatedMember.fullName}`);
+
+      // 2. Persist to Supabase with isRegistration: false to avoid duplicate check bottlenecks
+      const saved = await saveMemberToSupabase(updatedMember, { isRegistration: false });
+      if (saved) {
+        onUpdateMembers(members.map((m) => (m.id === saved.id ? saved : m)));
+      }
+
+      // 3. Immediately close modal
+      setEditingMember(null);
+
+      // 4. Background refresh without stalling the admin
+      fetchMembersFromSupabase()
+        .then((fresh) => {
+          if (Array.isArray(fresh) && fresh.length > 0) {
+            onUpdateMembers(fresh);
+          }
+        })
+        .catch((syncErr) => console.warn('Background members sync note:', syncErr));
+    } catch (err: any) {
+      console.error('Failed to save member to Supabase:', err);
+      alert(`Failed to save member to Supabase: ${err?.message || 'Error occurred'}`);
+    } finally {
+      setIsSavingMemberEdit(false);
+    }
+  };
+
   const handleDeleteMember = (id: string) => {
     const target = members.find((m) => m.id === id || m.membershipId === id);
     if (!target) {
@@ -1192,7 +1270,7 @@ CREATE POLICY "Admin Full Access Payments"
           approvalNotificationSent: true,
           approvalNotificationSentAt: new Date().toISOString(),
         };
-        await saveMemberToSupabase(updatedM);
+        await saveMemberToSupabase(updatedM, { isRegistration: false });
         approvedBatch.push({ member: updatedM, genId });
         updatedList[i] = updatedM;
       }
@@ -1351,6 +1429,41 @@ CREATE POLICY "Admin Full Access Payments"
 
   const handleDownloadFullDatabaseCSV = () => {
     handleExecuteBulkExport('all');
+  };
+
+  const handleDownloadPdfRegister = async () => {
+    // RULE A — NO MEMBERS SELECTED:
+    // If no member checkbox is selected, clicking “Download PDF Register” should NOT download a PDF containing all members.
+    // Show a clear message telling the admin to select members first.
+    if (!selectedMemberIds || selectedMemberIds.length === 0) {
+      alert('Please select at least one member to download the PDF Register.');
+      return;
+    }
+
+    // RULE B & C: Selection controls the PDF.
+    // Get only selected member records, preserving table display order.
+    const selectedInFiltered = filteredMembers.filter((m) => selectedMemberIds.includes(m.id));
+    const selectedOutsideFiltered = members.filter((m) => selectedMemberIds.includes(m.id) && !filteredMembers.some((fm) => fm.id === m.id));
+    const selectedMembers = [...selectedInFiltered, ...selectedOutsideFiltered];
+
+    if (selectedMembers.length === 0) {
+      alert('Please select at least one member to download the PDF Register.');
+      return;
+    }
+
+    setIsDownloadingPdfRegister(true);
+    try {
+      const filterDesc = selectedMembers.length === members.length
+        ? 'All Registered Members'
+        : `${selectedMembers.length} Selected Member${selectedMembers.length === 1 ? '' : 's'}`;
+      await downloadMembersListPdf(selectedMembers, 'Official Members Register', filterDesc, settings);
+      onAddAuditLog('DOWNLOAD_REGISTER_PDF', `Downloaded Official PDF Register for ${selectedMembers.length} selected member(s)`);
+    } catch (err) {
+      console.error('Members list PDF error:', err);
+      alert('Failed to generate PDF register. Please try again.');
+    } finally {
+      setIsDownloadingPdfRegister(false);
+    }
   };
 
   const handleExportCSV = () => {
@@ -1949,30 +2062,18 @@ CREATE POLICY "Admin Full Access Payments"
                 </button>
 
                 <button
-                  onClick={() => {
-                    setBulkExportScope('all');
-                    setShowBulkExportModal(true);
-                  }}
-                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-bold hover:bg-slate-200 shadow-xs transition-all"
-                  title="Bulk Export Registered Members Database with Custom Scope Selection"
-                >
-                  <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-                  <span>Export Options</span>
-                </button>
-
-                <button
-                  onClick={async () => {
-                    try {
-                      await downloadMembersListPdf(filteredMembers, 'Official Members Register', 'All Filtered Chapters', settings);
-                    } catch (err) {
-                      console.error('Members list PDF error:', err);
-                    }
-                  }}
-                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-sky-700 hover:bg-sky-800 text-white text-xs font-bold shadow-xs transition-all cursor-pointer"
+                  type="button"
+                  onClick={handleDownloadPdfRegister}
+                  disabled={isDownloadingPdfRegister}
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-sky-700 hover:bg-sky-800 disabled:opacity-75 text-white text-xs font-bold shadow-xs transition-all cursor-pointer active:scale-95"
                   title="Download Official N-NEPEF Members Register (PDF)"
                 >
-                  <Download className="w-4 h-4 text-sky-200" />
-                  <span>Download PDF Register</span>
+                  {isDownloadingPdfRegister ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-sky-200" />
+                  ) : (
+                    <Download className="w-4 h-4 text-sky-200" />
+                  )}
+                  <span>{isDownloadingPdfRegister ? 'Generating PDF...' : 'Download PDF Register'}</span>
                 </button>
 
                 <button
@@ -2040,13 +2141,6 @@ CREATE POLICY "Admin Full Access Payments"
               <div className="p-3 bg-sky-50 dark:bg-sky-950/80 border border-sky-200 rounded-2xl flex items-center justify-between text-xs font-bold text-sky-900 dark:text-sky-200">
                 <span>{selectedMemberIds.length} Members Selected</span>
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleExecuteBulkExport('selected')}
-                    className="px-3 py-1.5 rounded-lg bg-sky-600 text-white hover:bg-sky-700 flex items-center gap-1"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Export Selected ({selectedMemberIds.length})</span>
-                  </button>
                   <button onClick={handleBulkApprove} className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700">
                     Bulk Approve
                   </button>
@@ -2067,6 +2161,7 @@ CREATE POLICY "Admin Full Access Payments"
                     <th className="p-4 w-10">
                       <input
                         type="checkbox"
+                        checked={filteredMembers.length > 0 && filteredMembers.every((m) => selectedMemberIds.includes(m.id))}
                         onChange={(e) => {
                           if (e.target.checked) setSelectedMemberIds(filteredMembers.map((m) => m.id));
                           else setSelectedMemberIds([]);
@@ -2136,9 +2231,16 @@ CREATE POLICY "Admin Full Access Payments"
                           </td>
 
                           <td className="p-4">
-                            <span className="font-mono font-bold text-[#2EA3F2]">
-                              {m.membershipId || 'UNASSIGNED'}
-                            </span>
+                            <div className="space-y-0.5">
+                              <span className="font-mono font-bold text-[#2EA3F2]">
+                                {m.membershipId || 'UNASSIGNED'}
+                              </span>
+                              {m.status === 'pending' && (m.existingMembershipId || m.requestedMembershipId) && (
+                                <div className="text-[10px] text-amber-600 dark:text-amber-400 font-mono font-bold flex items-center gap-1" title="Proposed / Existing ID entered by member">
+                                  <span>Req: {m.existingMembershipId || m.requestedMembershipId}</span>
+                                </div>
+                              )}
+                            </div>
                           </td>
 
                           <td className="p-4 font-semibold">{m.state}</td>
@@ -2604,6 +2706,9 @@ CREATE POLICY "Admin Full Access Payments"
                   {SPECIALIZATIONS.map((sp) => (
                     <option key={sp} value={sp}>{sp}</option>
                   ))}
+                  {editingMember.specialization && !SPECIALIZATIONS.includes(editingMember.specialization) && (
+                    <option value={editingMember.specialization}>{editingMember.specialization}</option>
+                  )}
                 </select>
               </div>
 
@@ -2857,25 +2962,28 @@ CREATE POLICY "Admin Full Access Payments"
               </button>
 
               <div className="flex items-center justify-end gap-3 w-full sm:w-auto">
-                <button onClick={() => setEditingMember(null)} className="px-4 py-2 rounded-xl bg-slate-200 dark:bg-slate-800 text-xs font-bold">
+                <button
+                  type="button"
+                  disabled={isSavingMemberEdit}
+                  onClick={() => setEditingMember(null)}
+                  className="px-4 py-2 rounded-xl bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-bold transition-all disabled:opacity-50 cursor-pointer"
+                >
                   Cancel
                 </button>
                 <button
-                  onClick={async () => {
-                    if (!editingMember) return;
-                    try {
-                      await saveMemberToSupabase(editingMember);
-                      const freshMembers = await fetchMembersFromSupabase();
-                      onUpdateMembers(freshMembers);
-                      setEditingMember(null);
-                      onAddAuditLog('MEMBER_EDIT', `Updated information for member ${editingMember.fullName}`);
-                    } catch (err: any) {
-                      alert(`Failed to save member to Supabase: ${err?.message || 'Error occurred'}`);
-                    }
-                  }}
-                  className="px-5 py-2 rounded-xl bg-[#0A2E73] text-white text-xs font-bold"
+                  type="button"
+                  disabled={isSavingMemberEdit}
+                  onClick={handleSaveMemberEdit}
+                  className="flex items-center gap-2 px-5 py-2 rounded-xl bg-[#0A2E73] hover:bg-[#082357] text-white text-xs font-bold shadow transition-all disabled:opacity-60 cursor-pointer active:scale-95"
                 >
-                  Save Changes
+                  {isSavingMemberEdit ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-sky-200" />
+                      <span>Saving Changes...</span>
+                    </>
+                  ) : (
+                    <span>Save Changes</span>
+                  )}
                 </button>
               </div>
             </div>
@@ -3322,27 +3430,78 @@ CREATE POLICY "Admin Full Access Payments"
 
             {/* Form Inputs */}
             <div className="space-y-4">
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center justify-between">
-                  <span>Official Membership ID Number *</span>
-                  <span className="text-[10px] text-slate-500 font-mono">Format: NNEPEF/STATE/0000</span>
-                </label>
+              {/* Member-Submitted ID Banner if present */}
+              {(approvingMember.existingMembershipId || approvingMember.requestedMembershipId) && (
+                <div className="p-3.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                  <div className="space-y-0.5">
+                    <span className="font-bold text-amber-800 dark:text-amber-300 flex items-center gap-1.5">
+                      <span>⚠️</span>
+                      <span>Lambar da Mamba ya shigar (Member Submitted ID):</span>
+                    </span>
+                    <p className="font-mono font-bold text-slate-900 dark:text-white text-sm">
+                      {approvingMember.existingMembershipId || approvingMember.requestedMembershipId}
+                    </p>
+                    <p className="text-[10px] text-amber-700 dark:text-amber-400">
+                      Ba ta fara aiki ba tukuna. Idan kuna son amincewa da wannan lambar, danna maballin gefe.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAssignedMembershipId((approvingMember.existingMembershipId || approvingMember.requestedMembershipId)!)}
+                    className="px-3 py-1.5 text-xs font-bold bg-amber-600 hover:bg-amber-700 active:scale-95 text-white rounded-xl shadow-xs transition-all shrink-0 cursor-pointer"
+                  >
+                    Yi Amfani Da Ita (Use This ID)
+                  </button>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    <span>Manual Membership ID Number *</span>
+                  </label>
+                  <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-950/80 px-2 py-0.5 rounded-md border border-emerald-500/30">
+                    Rubuta da Hannu (Manual)
+                  </span>
+                </div>
                 <div className="relative">
                   <input
                     type="text"
                     required
+                    autoFocus
                     value={assignedMembershipId}
                     onChange={(e) => setAssignedMembershipId(e.target.value.toUpperCase())}
-                    placeholder="e.g. NNEPEF/KN/0001"
-                    className="w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-mono font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 outline-none uppercase"
+                    placeholder="e.g. NNEPEF/KN/0001 ko duk lambar da kake so"
+                    className="w-full px-4 py-3 rounded-xl border-2 border-emerald-500/50 dark:border-emerald-500/40 bg-white dark:bg-slate-950 text-sm font-mono font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 outline-none uppercase shadow-inner tracking-wider"
                   />
-                  <span className="absolute right-3 top-3 text-[10px] font-bold text-emerald-600 bg-emerald-50 dark:bg-emerald-950 px-2 py-0.5 rounded-md">
-                    Required
-                  </span>
                 </div>
-                <p className="text-[10px] text-slate-500 leading-tight">
-                  This unique ID will be embedded into the member's official digital ID card, verification QR code, and PDF dossier.
-                </p>
+                <div className="flex items-center justify-between pt-1">
+                  <p className="text-[11px] text-slate-500 leading-tight">
+                    Shigar da lambar memba ta manual. Wannan lambar za ta fito kai tsaye a kan Smart ID Card da QR Code.
+                  </p>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const st = approvingMember.state ? approvingMember.state.trim().slice(0, 2).toUpperCase() : 'KN';
+                        setAssignedMembershipId(`NNEPEF/${st}/`);
+                      }}
+                      className="text-[10px] bg-slate-100 dark:bg-slate-800 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 text-slate-700 dark:text-slate-300 hover:text-emerald-600 px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700 transition-colors"
+                      title="Saka Prefix na Jiha"
+                    >
+                      NNEPEF/{approvingMember.state ? approvingMember.state.trim().slice(0, 2).toUpperCase() : 'KN'}/
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAssignedMembershipId('')}
+                      className="text-[10px] bg-slate-100 dark:bg-slate-800 hover:bg-red-50 dark:hover:bg-red-950/50 text-slate-600 dark:text-slate-400 hover:text-red-500 px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700 transition-colors"
+                      title="Goge rubutun"
+                    >
+                      Goge
+                    </button>
+                  </div>
+                </div>
               </div>
 
               <div className="space-y-1.5">
@@ -4545,17 +4704,33 @@ CREATE POLICY "Admin Full Access Payments"
       {/* TAB 8: NEWS & MEDIA */}
       {activeTab === 'news' && (
         <div className="space-y-6">
-          <div className="flex justify-between items-center">
-            <h3 className="font-display font-bold text-lg text-slate-900 dark:text-white">Technical Publications &amp; News</h3>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h3 className="font-display font-bold text-lg text-slate-900 dark:text-white">Technical Publications &amp; News</h3>
+              <p className="text-xs text-slate-500">Manage news articles, engineering journals, media announcements, and upload article photos.</p>
+            </div>
             <button
-              onClick={() => setShowAddNews(true)}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#0A2E73] text-white text-xs font-bold shadow"
+              onClick={() => {
+                setNewNews({
+                  title: '',
+                  category: 'Engineering',
+                  summary: '',
+                  content: '',
+                  imageUrl: 'https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&q=80&w=800',
+                  author: 'N-NEPEF Editorial Board',
+                  featured: false,
+                  tags: 'engineering, power, nigeria',
+                });
+                setShowAddNews(true);
+              }}
+              className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#0A2E73] hover:bg-sky-900 text-white text-xs font-bold shadow transition-all shrink-0"
             >
-              <Plus className="w-4 h-4" />
-              <span>Publish Article</span>
+              <Plus className="w-4 h-4 text-[#2EA3F2]" />
+              <span>Saka Sabon Labari (Publish Article)</span>
             </button>
           </div>
 
+          {/* ADD NEWS ARTICLE FORM (WITH PHOTO UPLOAD) */}
           {showAddNews && (
             <form
               onSubmit={(e) => {
@@ -4563,12 +4738,12 @@ CREATE POLICY "Admin Full Access Payments"
                 const item: NewsArticle = {
                   id: `news-${Date.now()}`,
                   title: newNews.title,
-                  category: 'Announcements',
+                  category: newNews.category as any,
                   summary: newNews.summary,
                   content: newNews.content,
                   date: new Date().toISOString().split('T')[0],
-                  imageUrl: newNews.imageUrl,
-                  author: newNews.author,
+                  imageUrl: newNews.imageUrl || 'https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&q=80&w=800',
+                  author: newNews.author || 'N-NEPEF Editorial Board',
                   featured: newNews.featured,
                   commentsCount: 0,
                   views: 1,
@@ -4578,158 +4753,750 @@ CREATE POLICY "Admin Full Access Payments"
                 setShowAddNews(false);
                 onAddAuditLog('NEWS_PUBLISH', `Published news article: ${item.title}`);
               }}
-              className="glass-card p-6 rounded-3xl space-y-4"
+              className="glass-card p-6 sm:p-8 rounded-3xl space-y-5 border-2 border-sky-500/30 shadow-xl bg-slate-50/50 dark:bg-slate-900/50"
             >
-              <h4 className="font-bold text-sm text-slate-900 dark:text-white">Publish Article</h4>
-              <div className="space-y-3 text-xs">
-                <input
-                  type="text"
-                  required
-                  placeholder="Article Title"
-                  value={newNews.title}
-                  onChange={(e) => setNewNews({ ...newNews, title: e.target.value })}
-                  className="w-full px-4 py-2 rounded-xl border"
-                />
-                <textarea
-                  placeholder="Summary..."
-                  rows={2}
-                  value={newNews.summary}
-                  onChange={(e) => setNewNews({ ...newNews, summary: e.target.value })}
-                  className="w-full px-4 py-2 rounded-xl border"
-                ></textarea>
-                <textarea
-                  placeholder="Full Article Content..."
-                  rows={4}
-                  value={newNews.content}
-                  onChange={(e) => setNewNews({ ...newNews, content: e.target.value })}
-                  className="w-full px-4 py-2 rounded-xl border"
-                ></textarea>
+              <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+                <div className="flex items-center gap-2">
+                  <span className="p-2 bg-sky-100 dark:bg-sky-950 text-[#0A2E73] dark:text-sky-400 rounded-xl">
+                    <ImageIcon className="w-5 h-5" />
+                  </span>
+                  <h4 className="font-bold text-sm text-slate-900 dark:text-white">Publish New Article with Photo</h4>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowAddNews(false)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white"
+                >
+                  <X className="w-5 h-5" />
+                </button>
               </div>
-              <div className="flex justify-end gap-2">
-                <button type="button" onClick={() => setShowAddNews(false)} className="px-4 py-2 bg-slate-200 rounded-xl text-xs font-bold">
+
+              {/* PHOTO UPLOAD SECTION */}
+              <div className="p-4 rounded-2xl bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-3">
+                <label className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <ImageIcon className="w-4 h-4 text-sky-500" />
+                    <span>Hoton Labari (Article Photo Upload) *</span>
+                  </span>
+                  <span className="text-[10px] text-slate-400">PNG, JPG, WebP</span>
+                </label>
+
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+                  {/* Photo Preview Thumbnail */}
+                  <div className="w-32 h-24 rounded-2xl overflow-hidden border-2 border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 shrink-0 relative group">
+                    <img
+                      src={newNews.imageUrl}
+                      alt="Preview"
+                      className="w-full h-full object-cover"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&q=80&w=800';
+                      }}
+                    />
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-[10px] text-white font-bold">
+                      Preview
+                    </div>
+                  </div>
+
+                  {/* Upload Controls */}
+                  <div className="flex-1 space-y-2 w-full">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer transition-colors shadow-sm">
+                        <Upload className="w-4 h-4" />
+                        <span>Dora Hoto Daga Na'ura (Upload Photo)</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              const reader = new FileReader();
+                              reader.onloadend = () => {
+                                setNewNews(prev => ({ ...prev, imageUrl: reader.result as string }));
+                              };
+                              reader.readAsDataURL(file);
+                            }
+                          }}
+                        />
+                      </label>
+
+                      <button
+                        type="button"
+                        onClick={() => setNewNews(prev => ({ ...prev, imageUrl: 'https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&q=80&w=800' }))}
+                        className="px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 text-xs font-bold hover:bg-slate-200 transition-colors"
+                      >
+                        Sake Saitawa (Reset)
+                      </button>
+                    </div>
+
+                    <div className="relative">
+                      <input
+                        type="url"
+                        placeholder="Ko kuma saka adireshin hoton a nan (e.g. https://...)"
+                        value={newNews.imageUrl}
+                        onChange={(e) => setNewNews({ ...newNews, imageUrl: e.target.value })}
+                        className="w-full px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-xs text-slate-700 dark:text-slate-300 outline-none focus:ring-1 focus:ring-sky-500"
+                      />
+                    </div>
+
+                    {/* Presets */}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                      <span className="text-[10px] text-slate-500 font-bold">Zabi Hotunan Injiniyanci:</span>
+                      {[
+                        { label: 'Substation', url: 'https://images.unsplash.com/photo-1473341304170-971dccb5ac1e?auto=format&fit=crop&q=80&w=800' },
+                        { label: 'Wiring Safety', url: 'https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&q=80&w=800' },
+                        { label: 'Solar Energy', url: 'https://images.unsplash.com/photo-1509391365360-2e959784a276?auto=format&fit=crop&q=80&w=800' },
+                        { label: 'Conference', url: 'https://images.unsplash.com/photo-1511578314322-379afb476865?auto=format&fit=crop&q=80&w=800' }
+                      ].map((preset, pIdx) => (
+                        <button
+                          key={pIdx}
+                          type="button"
+                          onClick={() => setNewNews(prev => ({ ...prev, imageUrl: preset.url }))}
+                          className="text-[10px] px-2 py-0.5 rounded-lg bg-sky-50 dark:bg-sky-950/60 text-sky-700 dark:text-sky-300 hover:bg-sky-100 border border-sky-200 dark:border-sky-800"
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* ARTICLE FIELDS */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div className="sm:col-span-2 space-y-1">
+                  <label className="font-bold text-slate-700 dark:text-slate-300">Article Title *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Northern Nigeria Rural Electrification & Solar Grid Safety Standards 2026"
+                    value={newNews.title}
+                    onChange={(e) => setNewNews({ ...newNews, title: e.target.value })}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="font-bold text-slate-700 dark:text-slate-300">Category *</label>
+                  <select
+                    value={newNews.category}
+                    onChange={(e: any) => setNewNews({ ...newNews, category: e.target.value })}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
+                  >
+                    <option value="Engineering">Engineering Practice</option>
+                    <option value="Policy">Policy &amp; Standards</option>
+                    <option value="Announcements">Secretariat Announcements</option>
+                    <option value="Events">Workshops &amp; Events</option>
+                    <option value="Projects">Power Projects</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="font-bold text-slate-700 dark:text-slate-300">Author</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. N-NEPEF Editorial Board"
+                    value={newNews.author}
+                    onChange={(e) => setNewNews({ ...newNews, author: e.target.value })}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
+                  />
+                </div>
+
+                <div className="sm:col-span-2 space-y-1">
+                  <label className="font-bold text-slate-700 dark:text-slate-300">Summary (Takaitaccen Bayani) *</label>
+                  <textarea
+                    placeholder="Short overview shown in previews..."
+                    rows={2}
+                    required
+                    value={newNews.summary}
+                    onChange={(e) => setNewNews({ ...newNews, summary: e.target.value })}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
+                  ></textarea>
+                </div>
+
+                <div className="sm:col-span-2 space-y-1">
+                  <label className="font-bold text-slate-700 dark:text-slate-300">Full Article Content (Cikakken Labari) *</label>
+                  <textarea
+                    placeholder="Full article content and technical briefing..."
+                    rows={5}
+                    required
+                    value={newNews.content}
+                    onChange={(e) => setNewNews({ ...newNews, content: e.target.value })}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
+                  ></textarea>
+                </div>
+
+                <div className="sm:col-span-2 space-y-1">
+                  <label className="font-bold text-slate-700 dark:text-slate-300">Tags (Separated by commas)</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. electrical, safety, solar, nigeria, kano"
+                    value={newNews.tags}
+                    onChange={(e) => setNewNews({ ...newNews, tags: e.target.value })}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setShowAddNews(false)}
+                  className="px-5 py-2.5 bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-bold hover:bg-slate-300"
+                >
                   Cancel
                 </button>
-                <button type="submit" className="px-5 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold">
-                  Publish Article
+                <button
+                  type="submit"
+                  className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-lg"
+                >
+                  Buga Labari (Publish Article)
                 </button>
               </div>
             </form>
           )}
 
+          {/* EDIT NEWS ARTICLE MODAL */}
+          {editingNews && (
+            <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+              <div className="glass-card w-full max-w-3xl p-6 sm:p-8 rounded-3xl space-y-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl my-auto">
+                <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+                  <h4 className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
+                    <Edit className="w-4 h-4 text-sky-500" />
+                    <span>Gyara Labari (Edit Article &amp; Photo)</span>
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={() => setEditingNews(null)}
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-white"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {/* Edit Photo Section */}
+                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-center gap-4">
+                  <div className="w-28 h-20 rounded-xl overflow-hidden border border-slate-300 dark:border-slate-700 shrink-0">
+                    <img
+                      src={editingNews.imageUrl}
+                      alt=""
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                  <div className="space-y-2 flex-1 w-full">
+                    <label className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer transition-colors w-fit">
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>Canza Hoto (Upload New Photo)</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            const reader = new FileReader();
+                            reader.onloadend = () => {
+                              setEditingNews(prev => prev ? ({ ...prev, imageUrl: reader.result as string }) : null);
+                            };
+                            reader.readAsDataURL(file);
+                          }
+                        }}
+                      />
+                    </label>
+                    <input
+                      type="text"
+                      value={editingNews.imageUrl}
+                      onChange={(e) => setEditingNews({ ...editingNews, imageUrl: e.target.value })}
+                      placeholder="Photo URL"
+                      className="w-full px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-3 text-xs">
+                  <input
+                    type="text"
+                    required
+                    value={editingNews.title}
+                    onChange={(e) => setEditingNews({ ...editingNews, title: e.target.value })}
+                    placeholder="Title"
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
+                  />
+                  <div className="grid grid-cols-2 gap-3">
+                    <select
+                      value={editingNews.category}
+                      onChange={(e: any) => setEditingNews({ ...editingNews, category: e.target.value })}
+                      className="px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
+                    >
+                      <option value="Engineering">Engineering Practice</option>
+                      <option value="Policy">Policy &amp; Standards</option>
+                      <option value="Announcements">Secretariat Announcements</option>
+                      <option value="Events">Workshops &amp; Events</option>
+                      <option value="Projects">Power Projects</option>
+                    </select>
+                    <input
+                      type="text"
+                      value={editingNews.author}
+                      onChange={(e) => setEditingNews({ ...editingNews, author: e.target.value })}
+                      placeholder="Author"
+                      className="px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
+                    />
+                  </div>
+                  <textarea
+                    rows={2}
+                    value={editingNews.summary}
+                    onChange={(e) => setEditingNews({ ...editingNews, summary: e.target.value })}
+                    placeholder="Summary"
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
+                  ></textarea>
+                  <textarea
+                    rows={4}
+                    value={editingNews.content}
+                    onChange={(e) => setEditingNews({ ...editingNews, content: e.target.value })}
+                    placeholder="Full Content"
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
+                  ></textarea>
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setEditingNews(null)}
+                    className="px-4 py-2 bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-bold"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const updated = news.map(n => n.id === editingNews.id ? editingNews : n);
+                      onUpdateNews(updated);
+                      onAddAuditLog('NEWS_UPDATE', `Updated news article: ${editingNews.title}`);
+                      setEditingNews(null);
+                    }}
+                    className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold"
+                  >
+                    Adana Sauye-sauye (Save Changes)
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* NEWS ARTICLES GRID */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {news.map((item) => (
-              <div key={item.id} className="glass-card p-5 rounded-3xl flex gap-4">
-                <img src={item.imageUrl} alt="" className="w-24 h-24 rounded-2xl object-cover" />
-                <div className="flex-1 space-y-1">
-                  <span className="text-[10px] font-bold text-sky-600 uppercase">{item.category} • {item.date}</span>
+              <div key={item.id} className="glass-card p-5 rounded-3xl flex gap-4 border border-slate-200 dark:border-slate-800 shadow-md hover:border-sky-500/50 transition-colors">
+                <div className="w-24 h-24 rounded-2xl overflow-hidden bg-slate-100 dark:bg-slate-800 shrink-0 border border-slate-200 dark:border-slate-700">
+                  <img
+                    src={item.imageUrl}
+                    alt={item.title}
+                    className="w-full h-full object-cover"
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&q=80&w=800';
+                    }}
+                  />
+                </div>
+                <div className="flex-1 space-y-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold text-sky-600 uppercase">{item.category} • {item.date}</span>
+                  </div>
                   <h4 className="font-bold text-sm text-slate-900 dark:text-white line-clamp-1">{item.title}</h4>
                   <p className="text-xs text-slate-500 line-clamp-2">{item.summary}</p>
+                  <p className="text-[10px] text-slate-400">By {item.author || 'Editorial'}</p>
                 </div>
-                <button
-                  onClick={() => {
-                    onUpdateNews(news.filter((n) => n.id !== item.id));
-                    onAddAuditLog('NEWS_DELETE', `Deleted article ${item.title}`);
-                  }}
-                  className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg h-fit"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                <div className="flex flex-col gap-1.5 shrink-0">
+                  <button
+                    onClick={() => setEditingNews(item)}
+                    className="p-2 text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-950 rounded-lg transition-colors"
+                    title="Gyara Labari (Edit)"
+                  >
+                    <Edit className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (confirm(`Kana da tabbacin kana so ka goge labarin "${item.title}"?`)) {
+                        onUpdateNews(news.filter((n) => n.id !== item.id));
+                        onAddAuditLog('NEWS_DELETE', `Deleted article ${item.title}`);
+                      }
+                    }}
+                    className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-950 rounded-lg transition-colors"
+                    title="Goge Labari (Delete)"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* TAB 9: DOCUMENTS VAULT */}
+      {/* TAB 9: DOCUMENTS VAULT & CONSTITUTION MANAGER */}
       {activeTab === 'documents' && (
-        <div className="space-y-6">
-          <div className="flex justify-between items-center">
-            <h3 className="font-display font-bold text-lg text-slate-900 dark:text-white">Documents &amp; Circulars Vault</h3>
-            <button
-              onClick={() => setShowAddDocument(true)}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#0A2E73] text-white text-xs font-bold shadow"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Upload Document</span>
-            </button>
-          </div>
-
-          {showAddDocument && (
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                const item: DocumentItem = {
-                  id: `doc-${Date.now()}`,
-                  title: newDocument.title,
-                  category: 'Circular',
-                  uploadDate: new Date().toISOString().split('T')[0],
-                  fileUrl: newDocument.fileUrl,
-                  fileSize: newDocument.fileSize,
-                  format: 'PDF',
-                  minRole: 'all',
-                  downloadsCount: 0,
-                };
-                onUpdateDocuments([item, ...documents]);
-                setShowAddDocument(false);
-                onAddAuditLog('DOCUMENT_UPLOAD', `Uploaded document: ${item.title}`);
-              }}
-              className="glass-card p-6 rounded-3xl space-y-4"
-            >
-              <h4 className="font-bold text-sm text-slate-900 dark:text-white">New Document Upload</h4>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                <input
-                  type="text"
-                  required
-                  placeholder="Document Title"
-                  value={newDocument.title}
-                  onChange={(e) => setNewDocument({ ...newDocument, title: e.target.value })}
-                  className="px-4 py-2 rounded-xl border"
-                />
-                <select
-                  value={newDocument.category}
-                  onChange={(e: any) => setNewDocument({ ...newDocument, category: e.target.value })}
-                  className="px-4 py-2 rounded-xl border"
-                >
-                  <option value="Circular">Official Circular</option>
-                  <option value="Constitution">Forum Constitution</option>
-                  <option value="Policy">Technical Policy</option>
-                  <option value="Form">Membership Form</option>
-                </select>
-              </div>
-              <div className="flex justify-end gap-2">
-                <button type="button" onClick={() => setShowAddDocument(false)} className="px-4 py-2 bg-slate-200 rounded-xl text-xs font-bold">
-                  Cancel
-                </button>
-                <button type="submit" className="px-5 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold">
-                  Save Document
-                </button>
-              </div>
-            </form>
-          )}
-
-          <div className="space-y-3">
-            {documents.map((doc) => (
-              <div key={doc.id} className="glass-card p-4 rounded-2xl flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-sky-100 text-[#0A2E73] font-mono font-bold flex items-center justify-center text-xs">
-                    {doc.format}
+        <div className="space-y-8">
+          
+          {/* 1. DEDICATED CONSTITUTION & BYE-LAWS MANAGER CARD */}
+          <div className="glass-card p-6 sm:p-8 rounded-3xl border-2 border-emerald-500/40 bg-gradient-to-br from-emerald-50/40 via-white to-sky-50/40 dark:from-slate-900 dark:via-slate-900 dark:to-emerald-950/40 shadow-xl space-y-6">
+            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-5">
+              <div className="flex items-start gap-3.5">
+                <div className="p-3 bg-emerald-600 text-white rounded-2xl shadow-md shrink-0">
+                  <BookOpen className="w-7 h-7" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-display font-extrabold text-lg sm:text-xl text-slate-900 dark:text-white">
+                      Kundin Tsarin Mulki (Official Constitution &amp; Bye-Laws)
+                    </h3>
+                    <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-500/30">
+                      Active
+                    </span>
                   </div>
-                  <div>
-                    <h4 className="font-bold text-xs text-slate-900 dark:text-white">{doc.title}</h4>
-                    <p className="text-[10px] text-slate-500">{doc.category} • {doc.fileSize} • Uploaded {doc.uploadDate}</p>
+                  <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 max-w-2xl">
+                    Dora ko sabunta kundin tsarin mulki na kungiya. <strong>Kowa zai iya gani ya karanta a shafin yanar gizo (Online Reader)</strong>, amma <strong>Saukewa (Download PDF) an tanadar wa Admin ne kadai</strong>.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                {/* View/Test Constitution Reader */}
+                <button
+                  type="button"
+                  onClick={() => setShowConstitutionModal(true)}
+                  className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-white dark:bg-slate-800 text-emerald-700 dark:text-emerald-400 border border-emerald-500/40 text-xs font-bold hover:bg-emerald-50 transition-colors shadow-sm"
+                >
+                  <Eye className="w-4 h-4" />
+                  <span>Karanta Kundin Mulki</span>
+                </button>
+
+                {/* Upload / Replace Constitution Button */}
+                <button
+                  type="button"
+                  onClick={() => setShowConstitutionUpload(true)}
+                  className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-lg transition-all"
+                >
+                  <Upload className="w-4 h-4" />
+                  <span>Dora Kundin Tsarin Mulki (Upload PDF)</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Current Active Constitution Status */}
+            {(() => {
+              const currentConst = documents.find(d => d.category === 'Constitution') || documents[0];
+              return (
+                <div className="p-4 rounded-2xl bg-white dark:bg-slate-950 border border-emerald-500/20 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 rounded-xl bg-emerald-100 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-300 font-mono font-bold flex items-center justify-center text-sm">
+                      PDF
+                    </div>
+                    <div>
+                      <h4 className="font-bold text-sm text-slate-900 dark:text-white">
+                        {currentConst?.title || 'N-NEPEF Constitution & Bye-Laws (2020 Revised Edition)'}
+                      </h4>
+                      <p className="text-xs text-slate-500">
+                        Size: {currentConst?.fileSize || '2.4 MB'} • Uploaded: {currentConst?.uploadDate || '2020-10-01'} • Category: Constitution
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-bold text-slate-500 flex items-center gap-1 bg-slate-100 dark:bg-slate-900 px-3 py-1.5 rounded-xl">
+                      <Lock className="w-3.5 h-3.5 text-amber-500" />
+                      <span>Download Policy: Admin Only</span>
+                    </span>
+                    <button
+                      onClick={() => {
+                        const link = document.createElement('a');
+                        link.href = currentConst?.fileUrl || '#';
+                        link.download = `${(currentConst?.title || 'N-NEPEF_Constitution').replace(/\s+/g, '_')}.pdf`;
+                        link.target = '_blank';
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                      }}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#0A2E73] hover:bg-sky-900 text-white text-xs font-bold shadow transition-colors"
+                      title="Admin Authorized Download"
+                    >
+                      <Download className="w-3.5 h-3.5 text-[#2EA3F2]" />
+                      <span>Download PDF</span>
+                    </button>
                   </div>
                 </div>
-                <button
-                  onClick={() => {
-                    onUpdateDocuments(documents.filter((d) => d.id !== doc.id));
-                    onAddAuditLog('DOCUMENT_DELETE', `Deleted document ${doc.title}`);
-                  }}
-                  className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+              );
+            })()}
+
+            {/* CONSTITUTION UPLOAD FORM MODAL / DRAWER */}
+            {showConstitutionUpload && (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const currentConst = documents.find(d => d.category === 'Constitution');
+                  const updatedDoc: DocumentItem = {
+                    id: currentConst ? currentConst.id : `doc-${Date.now()}`,
+                    title: constitutionForm.title,
+                    category: 'Constitution',
+                    fileUrl: constitutionForm.fileUrl || currentConst?.fileUrl || 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf',
+                    fileSize: constitutionForm.fileSize,
+                    format: 'PDF',
+                    minRole: 'all',
+                    uploadDate: new Date().toISOString().split('T')[0],
+                    downloadsCount: currentConst ? currentConst.downloadsCount : 0,
+                  };
+
+                  const otherDocs = documents.filter(d => d.id !== updatedDoc.id && d.category !== 'Constitution');
+                  onUpdateDocuments([updatedDoc, ...otherDocs]);
+                  setShowConstitutionUpload(false);
+                  onAddAuditLog('CONSTITUTION_UPLOAD', `Uploaded/Updated Forum Constitution: ${updatedDoc.title}`);
+                }}
+                className="p-6 rounded-2xl bg-white dark:bg-slate-950 border-2 border-emerald-500/50 space-y-4 shadow-lg"
+              >
+                <div className="flex items-center justify-between">
+                  <h4 className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
+                    <Upload className="w-4 h-4 text-emerald-600" />
+                    <span>Dora Sabon Kundin Tsarin Mulki (Upload / Replace Constitution)</span>
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={() => setShowConstitutionUpload(false)}
+                    className="p-1 text-slate-400 hover:text-white"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                  <div className="sm:col-span-2 space-y-1">
+                    <label className="font-bold text-slate-700 dark:text-slate-300">Constitution Title *</label>
+                    <input
+                      type="text"
+                      required
+                      value={constitutionForm.title}
+                      onChange={(e) => setConstitutionForm({ ...constitutionForm, title: e.target.value })}
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-2 space-y-1">
+                    <label className="font-bold text-slate-700 dark:text-slate-300">Upload PDF / Document File *</label>
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-2 px-5 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer transition-colors shadow">
+                        <Upload className="w-4 h-4" />
+                        <span>Zabi Fayil Daga Na'ura (Select PDF)</span>
+                        <input
+                          type="file"
+                          accept=".pdf,.doc,.docx"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              const sizeInMb = (file.size / (1024 * 1024)).toFixed(1);
+                              const reader = new FileReader();
+                              reader.onloadend = () => {
+                                setConstitutionForm(prev => ({
+                                  ...prev,
+                                  fileUrl: reader.result as string,
+                                  fileName: file.name,
+                                  fileSize: `${sizeInMb} MB`,
+                                  format: 'PDF'
+                                }));
+                              };
+                              reader.readAsDataURL(file);
+                            }
+                          }}
+                        />
+                      </label>
+                      <div className="text-xs text-slate-500">
+                        {constitutionForm.fileName ? (
+                          <span className="font-bold text-emerald-600 dark:text-emerald-400">
+                            ✓ {constitutionForm.fileName} ({constitutionForm.fileSize})
+                          </span>
+                        ) : (
+                          <span>Babu fayil din da aka zaba tukunna (No file selected yet)</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="sm:col-span-2 space-y-1">
+                    <label className="font-bold text-slate-700 dark:text-slate-300">Direct PDF Document URL (Zabi na biyu / Alternative)</label>
+                    <input
+                      type="url"
+                      placeholder="https://example.com/constitution.pdf"
+                      value={constitutionForm.fileUrl}
+                      onChange={(e) => setConstitutionForm({ ...constitutionForm, fileUrl: e.target.value })}
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setShowConstitutionUpload(false)}
+                    className="px-4 py-2 bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-bold"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow"
+                  >
+                    Dora Kundin Tsarin Mulki (Save Constitution)
+                  </button>
+                </div>
+              </form>
+            )}
+
+          </div>
+
+          {/* 2. GENERAL DOCUMENTS & CIRCULARS VAULT */}
+          <div className="space-y-6">
+            <div className="flex justify-between items-center">
+              <div>
+                <h3 className="font-display font-bold text-lg text-slate-900 dark:text-white">Documents &amp; Circulars Vault</h3>
+                <p className="text-xs text-slate-500">Upload official circulars, engineering safety codes, and membership forms.</p>
               </div>
-            ))}
+              <button
+                onClick={() => setShowAddDocument(true)}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#0A2E73] text-white text-xs font-bold shadow"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Upload Document</span>
+              </button>
+            </div>
+
+            {showAddDocument && (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const item: DocumentItem = {
+                    id: `doc-${Date.now()}`,
+                    title: newDocument.title,
+                    category: newDocument.category,
+                    uploadDate: new Date().toISOString().split('T')[0],
+                    fileUrl: newDocument.fileUrl || '#',
+                    fileSize: newDocument.fileSize,
+                    format: newDocument.format || 'PDF',
+                    minRole: newDocument.minRole || 'all',
+                    downloadsCount: 0,
+                  };
+                  onUpdateDocuments([item, ...documents]);
+                  setShowAddDocument(false);
+                  onAddAuditLog('DOCUMENT_UPLOAD', `Uploaded document: ${item.title}`);
+                }}
+                className="glass-card p-6 rounded-3xl space-y-4 border border-slate-200 dark:border-slate-800 shadow-lg"
+              >
+                <h4 className="font-bold text-sm text-slate-900 dark:text-white">New Document Upload</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <input
+                    type="text"
+                    required
+                    placeholder="Document Title"
+                    value={newDocument.title}
+                    onChange={(e) => setNewDocument({ ...newDocument, title: e.target.value })}
+                    className="px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
+                  />
+                  <select
+                    value={newDocument.category}
+                    onChange={(e: any) => setNewDocument({ ...newDocument, category: e.target.value })}
+                    className="px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
+                  >
+                    <option value="Circular">Official Circular</option>
+                    <option value="Policy">Technical Policy</option>
+                    <option value="Form">Membership Form</option>
+                    <option value="Minutes">Meeting Minutes</option>
+                  </select>
+
+                  <div className="sm:col-span-2 space-y-1">
+                    <label className="font-bold text-slate-700 dark:text-slate-300">File Attachment *</label>
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-bold cursor-pointer border border-slate-300 dark:border-slate-700 hover:bg-slate-200">
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>Zabi Takarda Daga Na'ura</span>
+                        <input
+                          type="file"
+                          accept=".pdf,.doc,.docx"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              const size = (file.size / (1024 * 1024)).toFixed(1);
+                              const reader = new FileReader();
+                              reader.onloadend = () => {
+                                setNewDocument(prev => ({
+                                  ...prev,
+                                  fileUrl: reader.result as string,
+                                  fileName: file.name,
+                                  fileSize: `${size} MB`
+                                }));
+                              };
+                              reader.readAsDataURL(file);
+                            }
+                          }}
+                        />
+                      </label>
+                      <span className="text-xs text-slate-500">
+                        {newDocument.fileName || 'No file selected'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button type="button" onClick={() => setShowAddDocument(false)} className="px-4 py-2 bg-slate-200 dark:bg-slate-800 rounded-xl text-xs font-bold">
+                    Cancel
+                  </button>
+                  <button type="submit" className="px-5 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold">
+                    Save Document
+                  </button>
+                </div>
+              </form>
+            )}
+
+            <div className="space-y-3">
+              {documents.map((doc) => (
+                <div key={doc.id} className="glass-card p-4 rounded-2xl flex items-center justify-between border border-slate-200 dark:border-slate-800 shadow-sm">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-sky-100 dark:bg-sky-950 text-[#0A2E73] dark:text-sky-300 font-mono font-bold flex items-center justify-center text-xs">
+                      {doc.format}
+                    </div>
+                    <div>
+                      <h4 className="font-bold text-xs text-slate-900 dark:text-white">{doc.title}</h4>
+                      <p className="text-[10px] text-slate-500">{doc.category} • {doc.fileSize} • Uploaded {doc.uploadDate}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        const link = document.createElement('a');
+                        link.href = doc.fileUrl;
+                        link.download = `${doc.title.replace(/\s+/g, '_')}.pdf`;
+                        link.target = '_blank';
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                      }}
+                      className="p-1.5 text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-950 rounded-lg transition-colors"
+                      title="Download Document"
+                    >
+                      <Download className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (confirm(`Kana da tabbacin kana so ka goge takardar "${doc.title}"?`)) {
+                          onUpdateDocuments(documents.filter((d) => d.id !== doc.id));
+                          onAddAuditLog('DOCUMENT_DELETE', `Deleted document ${doc.title}`);
+                        }
+                      }}
+                      className="p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-950 rounded-lg transition-colors"
+                      title="Delete Document"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
@@ -6524,6 +7291,14 @@ CREATE POLICY "Admin Full Access Payments"
           </div>
         </div>
       )}
+
+      {/* CONSTITUTION READER MODAL (ADMIN HAS DOWNLOAD RIGHTS) */}
+      <ConstitutionReaderModal
+        isOpen={showConstitutionModal}
+        onClose={() => setShowConstitutionModal(false)}
+        isAdmin={true}
+        constitutionDoc={documents.find(d => d.category === 'Constitution') || documents[0]}
+      />
 
     </div>
   );
