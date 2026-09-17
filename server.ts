@@ -188,7 +188,8 @@ async function startServer() {
     };
 
     if (member.id) payload.id = member.id;
-    if (member.membershipId || member.membership_id) payload.membership_id = member.membershipId || member.membership_id;
+    const enteredId = (member.membershipId || member.membership_id || member.existingMembershipId || member.requestedMembershipId || '').trim();
+    if (enteredId) payload.membership_id = enteredId.toUpperCase();
     if (member.verificationCode || member.verification_code) payload.verification_code = member.verificationCode || member.verification_code;
     if (member.applicationReference || member.application_reference) payload.application_reference = member.applicationReference || member.application_reference;
     if (member.registeredAt || member.registered_at) payload.registered_at = member.registeredAt || member.registered_at;
@@ -943,7 +944,11 @@ async function startServer() {
         updated_at: new Date().toISOString()
       };
       if (updates.status) payload.status = String(updates.status).toLowerCase();
-      if (updates.membershipId !== undefined) payload.membership_id = updates.membershipId;
+      if (updates.membershipId !== undefined) payload.membership_id = updates.membershipId ? String(updates.membershipId).trim().toUpperCase() : null;
+      if (updates.membership_id !== undefined) payload.membership_id = updates.membership_id ? String(updates.membership_id).trim().toUpperCase() : null;
+      if (updates.gender !== undefined) payload.gender = updates.gender;
+      if (updates.fullName !== undefined) payload.full_name = String(updates.fullName).trim();
+      if (updates.full_name !== undefined) payload.full_name = String(updates.full_name).trim();
       if (updates.approvedAt !== undefined) payload.approved_at = updates.approvedAt;
       if (updates.approvedBy !== undefined) payload.approved_by = updates.approvedBy;
       if (updates.rejectedBy !== undefined) payload.rejected_by = updates.rejectedBy;
@@ -1213,6 +1218,28 @@ async function startServer() {
       return res.json({ success: true, payment: p });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // GET /api/proxy-image - Safe CORS proxy for downloading/converting member images and logos to Data URLs
+  app.get('/api/proxy-image', async (req, res) => {
+    try {
+      const targetUrl = req.query.url as string;
+      if (!targetUrl || typeof targetUrl !== 'string') {
+        return res.status(400).send('url parameter is required');
+      }
+      const response = await fetch(targetUrl);
+      if (!response.ok) {
+        return res.status(response.status).send('Failed to fetch image');
+      }
+      const contentType = response.headers.get('content-type') || 'image/jpeg';
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      const arrayBuffer = await response.arrayBuffer();
+      return res.send(Buffer.from(arrayBuffer));
+    } catch (err: any) {
+      return res.status(500).send(err.message || 'Image proxy error');
     }
   });
 

@@ -50,12 +50,30 @@ export const MembershipCard: React.FC<MembershipCardProps> = ({ member, logoUrl,
   const passportPhotoSrc = member.passportUrl || member.passportPhotoUrl || '';
   const formattedId = formatFourDigitMembershipId(member.membershipId);
   const memberIdDisplay = (formattedId || (member.applicationReference ? `REF-${member.applicationReference}` : 'PENDING APPROVAL')).toUpperCase();
-  const cleanPosition = (member.position || 'MEMBER').trim().toUpperCase();
+
+  // Check if member has an official position
+  const rawPosition = (member.position || '').trim().toUpperCase();
+  const hasOfficialPosition = Boolean(
+    rawPosition &&
+    rawPosition !== 'MEMBER' &&
+    rawPosition !== 'ORDINARY MEMBER' &&
+    rawPosition !== 'PRACTICING MEMBER' &&
+    rawPosition !== 'GENERAL MEMBER' &&
+    rawPosition !== 'MEMBER ONLY'
+  ) || String(member.role || '').toLowerCase().includes('admin');
+
+  // RULE 1:
+  // If the member has an official position, display ONLY: SECRETARY GENERAL
+  // Do NOT display “SECRETARY”, “Secretary”, or any other position.
+  // For a normal member with no official position, display ONLY: MEMBER
+  // Do not add any other title or position.
+  const displayPosition = hasOfficialPosition ? 'SECRETARY GENERAL' : 'MEMBER';
+
   const cleanName = (member.fullName || 'REGISTERED MEMBER').toUpperCase();
   const cleanSpecialization = (member.specialization || (member as any).speciality || member.occupation || 'ELECTRICAL ENGINEERING').toUpperCase();
   const formattedExpiry = formatCardExpiry(member.expiryDate);
-  const isExecutive = hasExecutiveColoredBottom(cleanPosition);
-  const isExactMember = cleanPosition === 'MEMBER';
+  const isExecutive = hasOfficialPosition;
+  const isExactMember = !hasOfficialPosition;
 
   // Generate crisp, verifiable QR code for back side
   useEffect(() => {
@@ -83,7 +101,7 @@ export const MembershipCard: React.FC<MembershipCardProps> = ({ member, logoUrl,
     setIsGeneratingPdf(true);
     setErrorMessage(null);
     try {
-      await downloadMemberIdCardPdf(member, settings);
+      await downloadMemberIdCardPdf(member, settings, e);
       setPdfSuccess(true);
       setTimeout(() => setPdfSuccess(false), 4000);
     } catch (err: any) {
@@ -129,6 +147,7 @@ export const MembershipCard: React.FC<MembershipCardProps> = ({ member, logoUrl,
   const renderFrontCard = () => (
     <div
       id="nnepef-vertical-idcard-front"
+      data-member-id={member.id || member.membershipId}
       className="w-[348px] sm:w-[364px] rounded-[38px] bg-[#0052CC] text-white p-3 sm:p-3.5 pt-4 sm:pt-4.5 relative overflow-hidden shadow-2xl flex flex-col justify-between select-none"
       style={{ minHeight: '620px', maxHeight: '650px' }}
     >
@@ -164,6 +183,7 @@ export const MembershipCard: React.FC<MembershipCardProps> = ({ member, logoUrl,
               src={displayLogo}
               alt="N-NEPEF Logo"
               className="w-full h-full object-contain"
+              crossOrigin="anonymous"
               onError={(e) => {
                 const target = e.currentTarget;
                 if (target.src !== OFFICIAL_ID_CARD_LOGO) {
@@ -192,14 +212,15 @@ export const MembershipCard: React.FC<MembershipCardProps> = ({ member, logoUrl,
                 alt={member.fullName}
                 onError={(e) => handleImageError(e, 'avatar')}
                 className="w-full h-full object-cover"
+                crossOrigin="anonymous"
               />
             </div>
           </div>
         </div>
 
         {/* 4 DYNAMIC INFO ROWS ON FRONT (SPECIALITY IS ON BACK ONLY) */}
-        <div className="mt-3.5 space-y-3 sm:space-y-3.5 text-left">
-          {/* Row 1: Member Name — PINK/MAGENTA, NOTICEABLY LARGER, BOLD & PROMINENT */}
+        <div className="mt-2.5 space-y-1.5 sm:space-y-2 text-left">
+          {/* Row 1: Member Name — PINK/MAGENTA, BOLD & PROMINENT */}
           <div className="flex items-center gap-2.5">
             <div className="w-8.5 h-8.5 rounded-lg bg-[#0052CC] text-white flex items-center justify-center flex-shrink-0 shadow-sm">
               <User className="w-5 h-5" />
@@ -211,41 +232,39 @@ export const MembershipCard: React.FC<MembershipCardProps> = ({ member, logoUrl,
             </div>
           </div>
 
-          {/* Row 2: Membership ID Number — DARK BLUE/NAVY, NOTICEABLY LARGER & BOLDER */}
+          {/* Row 2: Membership ID Number — DARK BLUE/NAVY, BOLD (NO "MEMBERSHIP ID: " prefix) */}
           <div className="flex items-center gap-2.5">
             <div className="w-8.5 h-8.5 rounded-lg bg-[#0052CC] text-white flex items-center justify-center flex-shrink-0 shadow-sm">
               <CreditCard className="w-5 h-5" />
             </div>
-            <div className="min-w-0 flex-1 flex items-baseline flex-wrap gap-x-1.5">
-              <span className="font-serif font-black text-[15.5px] sm:text-[17px] text-[#002B66] uppercase tracking-wide whitespace-nowrap">
-                MEMBERSHIP ID:
-              </span>
-              <span className="font-sans font-black text-[18px] sm:text-[20px] text-[#002B66] tracking-wider whitespace-nowrap inline-block">
+            <div className="overflow-hidden">
+              <h4 className="font-serif font-black text-[18px] sm:text-[20px] text-[#002B66] tracking-wider uppercase truncate leading-tight">
                 {memberIdDisplay}
-              </span>
+              </h4>
             </div>
           </div>
 
-          {/* Row 3: Position — GREEN, NOTICEABLY LARGER & PROMINENT */}
+          {/* Row 3: Position — GREEN, BOLD (ONLY "SECRETARY GENERAL" or "MEMBER") */}
           <div className="flex items-center gap-2.5">
             <div className="w-8.5 h-8.5 rounded-lg bg-[#0052CC] text-white flex items-center justify-center flex-shrink-0 shadow-sm">
               <Building2 className="w-5 h-5" />
             </div>
             <div className="overflow-hidden">
-              <span className="font-serif font-black text-[15.5px] sm:text-[17px] text-[#002B66] uppercase tracking-wide">
-                POSITION: <strong className="font-serif font-black text-[17.5px] sm:text-[19.5px] text-[#15803D]">{cleanPosition}</strong>
-              </span>
+              <h4 className="font-serif font-black text-[17.5px] sm:text-[19.5px] text-[#15803D] uppercase tracking-wide truncate leading-tight">
+                {displayPosition}
+              </h4>
             </div>
           </div>
 
-          {/* Row 4: Expiry — "EXPIRES: " in dark blue/navy, date in pink/magenta — LARGER & PROMINENT */}
+          {/* Row 4: Expiry — "EXPIRES: " in navy, date in pink/magenta — EXACTLY "EXPIRES: [DATE]" */}
           <div className="flex items-center gap-2.5">
             <div className="w-8.5 h-8.5 rounded-lg bg-[#0052CC] text-white flex items-center justify-center flex-shrink-0 shadow-sm">
               <Calendar className="w-5 h-5" />
             </div>
-            <div className="overflow-hidden">
-              <span className="font-serif font-black text-[15.5px] sm:text-[17px] text-[#002B66] uppercase tracking-wide">
-                EXPIRES: <strong className="font-sans font-black text-[17.5px] sm:text-[19.5px] text-[#E11D48]">{formattedExpiry}</strong>
+            <div className="min-w-0 overflow-visible flex items-baseline">
+              <span className="font-sans font-black text-[14px] sm:text-[15.5px] tracking-tight uppercase inline-flex items-baseline whitespace-nowrap leading-tight">
+                <span className="text-[#002B66]">EXPIRES:&nbsp;</span>
+                <span className="text-[#E11D48]">{formattedExpiry}</span>
               </span>
             </div>
           </div>
@@ -278,6 +297,7 @@ export const MembershipCard: React.FC<MembershipCardProps> = ({ member, logoUrl,
   const renderBackCard = () => (
     <div
       id="nnepef-vertical-idcard-back"
+      data-member-id={member.id || member.membershipId}
       className="w-[348px] sm:w-[364px] rounded-[38px] bg-[#0052CC] text-white p-3 sm:p-3.5 relative overflow-hidden shadow-2xl flex flex-col justify-between select-none"
       style={{ minHeight: '610px', maxHeight: '640px' }}
     >
@@ -345,6 +365,7 @@ export const MembershipCard: React.FC<MembershipCardProps> = ({ member, logoUrl,
               src={displaySignature}
               alt="Authorized Signature"
               className="max-h-10 max-w-[200px] object-contain"
+              crossOrigin="anonymous"
               onError={(e) => {
                 const target = e.currentTarget;
                 if (target.src !== OFFICIAL_SECRETARY_SIGNATURE) {
@@ -543,10 +564,18 @@ export const MembershipCard: React.FC<MembershipCardProps> = ({ member, logoUrl,
         ) : viewMode === 'front' ? (
           <div className="flex flex-col items-center">
             {renderFrontCard()}
+            {/* Maintain back card in DOM so DOM capture can always capture both sides accurately */}
+            <div style={{ position: 'fixed', left: '-9999px', top: 0, opacity: 1, pointerEvents: 'none', zIndex: -100, visibility: 'visible' }} aria-hidden="true">
+              {renderBackCard()}
+            </div>
           </div>
         ) : (
           <div className="flex flex-col items-center">
             {renderBackCard()}
+            {/* Maintain front card in DOM so DOM capture can always capture both sides accurately */}
+            <div style={{ position: 'fixed', left: '-9999px', top: 0, opacity: 1, pointerEvents: 'none', zIndex: -100, visibility: 'visible' }} aria-hidden="true">
+              {renderFrontCard()}
+            </div>
           </div>
         )}
       </div>

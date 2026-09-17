@@ -9,7 +9,7 @@ import { hashPassword } from '../utils/passwordUtils';
 import { signOutUser } from '../services/supabaseAuthService';
 import { fetchApprovedMemberById, isSupabaseConfigured, savePaymentToSupabase } from '../services/supabaseService';
 import { handleImageError, getValidImageUrl, downloadFileSafely } from '../utils/imageHelpers';
-import { downloadApprovalSlipPdf, downloadMemberProfilePdf } from '../services/pdfService';
+import { downloadApprovalSlipImage, downloadMemberDetailsImage } from '../services/pdfService';
 import { OFFICIAL_NNEPEF_LOGO } from '../constants/logo';
 import { OFFICIAL_SECRETARY_SIGNATURE } from '../constants/signature';
 import { safeMergeMember, parseNextOfKin, parseEducationDetails } from '../utils/memberHelpers';
@@ -84,16 +84,16 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
     setIsDownloadingSlipPdf(true);
     try {
       if (selectedSlipPdfType === 'slip') {
-        await downloadApprovalSlipPdf(currentUser, settings);
+        await downloadApprovalSlipImage(currentUser, settings);
       } else if (selectedSlipPdfType === 'biodata') {
-        await downloadMemberProfilePdf(currentUser, settings);
+        await downloadMemberDetailsImage(currentUser, settings);
       } else if (selectedSlipPdfType === 'both') {
-        await downloadApprovalSlipPdf(currentUser, settings);
+        await downloadApprovalSlipImage(currentUser, settings);
         await new Promise(resolve => setTimeout(resolve, 600));
-        await downloadMemberProfilePdf(currentUser, settings);
+        await downloadMemberDetailsImage(currentUser, settings);
       }
     } catch (e) {
-      console.warn('PDF download error:', e);
+      console.warn('Image download error:', e);
       setShowSlipModal(true);
     } finally {
       setIsDownloadingSlipPdf(false);
@@ -249,7 +249,7 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
             </div>
 
             <p className="font-mono font-extrabold text-xs text-[#2EA3F2]">
-              {currentUser.membershipId || 'Membership ID Pending Admin Assignment'}
+              {currentUser.status === 'approved' ? (currentUser.membershipId || 'Membership ID Pending Admin Assignment') : 'Membership ID Pending Admin Assignment'}
             </p>
 
             <p className="text-xs text-slate-600 dark:text-slate-300">
@@ -448,9 +448,9 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
                 className="px-3 py-2.5 rounded-xl bg-white dark:bg-slate-800 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 text-xs font-bold outline-none cursor-pointer focus:ring-2 focus:ring-emerald-500 shadow-xs"
                 title="Select document type to download"
               >
-                <option value="slip">Official Slip (PDF)</option>
-                <option value="biodata">Bio-Data Form (PDF)</option>
-                <option value="both">Both Documents (PDF)</option>
+                <option value="slip">Official Slip (Image)</option>
+                <option value="biodata">Bio-Data Form (Image)</option>
+                <option value="both">Both Documents (Image)</option>
               </select>
 
               <button
@@ -458,7 +458,7 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
                 onClick={handleDownloadSelectedPortalPdf}
                 disabled={isDownloadingSlipPdf}
                 className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-75 text-white font-bold text-xs flex items-center gap-2 shadow-md transition-all cursor-pointer active:scale-95"
-                title="Download selected official document as PDF"
+                title="Download selected official document as high-quality image"
               >
                 {isDownloadingSlipPdf ? (
                   <Loader2 className="w-4 h-4 animate-spin text-emerald-200" />
@@ -467,12 +467,12 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
                 )}
                 <span>
                   {isDownloadingSlipPdf
-                    ? 'Downloading PDF...'
+                    ? 'Downloading Image...'
                     : selectedSlipPdfType === 'slip'
-                      ? 'Download Slip PDF'
+                      ? 'Download Slip'
                       : selectedSlipPdfType === 'biodata'
-                        ? 'Download Bio-Data PDF'
-                        : 'Download Both PDFs'}
+                        ? 'Download Bio-Data'
+                        : 'Download Both'}
                 </span>
               </button>
               <button
@@ -543,7 +543,9 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
                   <span>{currentUser.status === 'approved' || (currentUser.status as string) === 'Active' ? 'OFFICIALLY APPROVED' : 'REGISTERED APPLICANT'}</span>
                 </span>
                 <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
-                  ID: {currentUser.membershipId || (currentUser.applicationReference ? `REF-${currentUser.applicationReference}` : 'PENDING')}
+                  ID: {currentUser.status === 'approved' || (currentUser.status as string) === 'Active'
+                    ? (currentUser.membershipId || (currentUser.applicationReference ? `REF-${currentUser.applicationReference}` : 'VERIFIED'))
+                    : (currentUser.applicationReference ? `REF-${currentUser.applicationReference}` : 'PENDING APPROVAL')}
                 </span>
               </div>
             </div>
@@ -575,7 +577,9 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
                   <div>
                     <span className="text-[10px] font-mono text-slate-500 uppercase block">Official Membership ID</span>
                     <p className="font-mono font-extrabold text-sm text-[#0A2E73] dark:text-sky-400 bg-sky-50 dark:bg-sky-950/60 px-2.5 py-1 rounded-lg border border-sky-200 dark:border-sky-800 inline-block">
-                      {currentUser.membershipId || 'PENDING ASSIGNMENT'}
+                      {currentUser.status === 'approved' || (currentUser.status as string) === 'Active'
+                        ? (currentUser.membershipId || 'PENDING ASSIGNMENT')
+                        : 'PENDING ASSIGNMENT'}
                     </p>
                   </div>
                   <div>
@@ -639,9 +643,9 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
                     className="px-3 py-2.5 rounded-xl bg-white dark:bg-slate-800 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-700 text-xs font-bold outline-none cursor-pointer focus:ring-2 focus:ring-emerald-500 shadow-xs"
                     title="Select document type to download"
                   >
-                    <option value="slip">Official Slip (PDF)</option>
-                    <option value="biodata">Bio-Data Form (PDF)</option>
-                    <option value="both">Both Documents (PDF)</option>
+                    <option value="slip">Official Slip (Image)</option>
+                    <option value="biodata">Bio-Data Form (Image)</option>
+                    <option value="both">Both Documents (Image)</option>
                   </select>
 
                   <button
@@ -657,12 +661,12 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
                     )}
                     <span>
                       {isDownloadingSlipPdf
-                        ? 'Downloading PDF...'
+                        ? 'Downloading Image...'
                         : selectedSlipPdfType === 'slip'
-                          ? 'Download Slip PDF'
+                          ? 'Download Slip'
                           : selectedSlipPdfType === 'biodata'
-                            ? 'Download Bio-Data PDF'
-                            : 'Download Both PDFs'}
+                            ? 'Download Bio-Data'
+                            : 'Download Both'}
                     </span>
                   </button>
                   <button
@@ -718,7 +722,11 @@ export const MemberPortal: React.FC<MemberPortalProps> = ({
               </div>
               <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
                 <span className="text-slate-500">Membership ID:</span>
-                <span className="font-mono font-bold text-[#2EA3F2]">{currentUser.membershipId || 'PENDING ASSIGNMENT'}</span>
+                <span className="font-mono font-bold text-[#2EA3F2]">
+                  {currentUser.status === 'approved' || (currentUser.status as string) === 'Active'
+                    ? (currentUser.membershipId || 'PENDING ASSIGNMENT')
+                    : 'PENDING APPROVAL'}
+                </span>
               </div>
               <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
                 <span className="text-slate-500">Position:</span>

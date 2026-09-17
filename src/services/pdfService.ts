@@ -1,55 +1,47 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import QRCode from 'qrcode';
+import html2canvas from 'html2canvas';
 import { Member, ForumSettings } from '../types';
 import { OFFICIAL_NNEPEF_LOGO, OFFICIAL_ID_CARD_LOGO } from '../constants/logo';
 import { OFFICIAL_SECRETARY_SIGNATURE } from '../constants/signature';
-import { downloadFileSafely } from '../utils/imageHelpers';
+import { downloadFileSafely, DEFAULT_AVATAR_SVG, getCachedBase64Image, loadHtmlImageFast } from '../utils/imageHelpers';
+import {
+  generateOfficialSlipCanvas,
+  downloadApprovalSlipImage,
+  downloadRegistrationSlipImage,
+  generateMemberDetailsCanvas,
+  downloadMemberDetailsImage
+} from './slipImageService';
+
+export {
+  generateOfficialSlipCanvas,
+  downloadApprovalSlipImage,
+  downloadRegistrationSlipImage,
+  generateMemberDetailsCanvas,
+  downloadMemberDetailsImage
+};
 
 /**
- * Safely loads an image as base64 data URL for embedding into jsPDF
+ * Safely loads an image as base64 data URL for embedding into jsPDF using memory cache
  */
 async function getBase64ImageFromUrl(url: string | undefined | null, fallbacks: string[] = []): Promise<string | null> {
-  const candidates = [url, ...fallbacks].filter((u): u is string => Boolean(u && typeof u === 'string' && u.trim() && u !== 'undefined' && u !== 'null'));
-  if (candidates.length === 0) return null;
-
-  for (const candidate of candidates) {
-    const cleanUrl = candidate.trim();
-    if (cleanUrl.startsWith('data:image/')) {
-      return cleanUrl;
-    }
-
-    try {
-      const fullUrl = cleanUrl.startsWith('http://') || cleanUrl.startsWith('https://')
-        ? cleanUrl
-        : (typeof window !== 'undefined' && window.location ? `${window.location.origin}${cleanUrl.startsWith('/') ? cleanUrl : '/' + cleanUrl}` : cleanUrl);
-      const response = await fetch(fullUrl, { mode: 'cors', cache: 'no-cache' });
-      if (response.ok) {
-        const blob = await response.blob();
-        const base64 = await new Promise<string | null>((resolve) => {
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            resolve(reader.result as string);
-          };
-          reader.onerror = () => resolve(null);
-          reader.readAsDataURL(blob);
-        });
-        if (base64 && base64.startsWith('data:image/')) {
-          return base64;
-        }
-      }
-    } catch (e) {
-      console.warn('[PDF Service] Error fetching image for PDF:', candidate, e);
-    }
-  }
-
-  return null;
+  const result = await getCachedBase64Image(url, fallbacks);
+  return result && result.startsWith('data:') ? result : null;
 }
 
 /**
- * Downloads an official, beautifully styled Member Profile PDF document
+ * Downloads official Member Details (Bio-Data Dossier) as an optimized high-quality image
  */
 export async function downloadMemberProfilePdf(member: Member, settings?: ForumSettings): Promise<void> {
+  // Delegate directly to optimized image download
+  await downloadMemberDetailsImage(member, settings);
+}
+
+/**
+ * Legacy PDF generator retained for explicit PDF export needs
+ */
+export async function generateMemberProfilePdfLegacy(member: Member, settings?: ForumSettings): Promise<void> {
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
@@ -484,10 +476,20 @@ export async function downloadMembersListPdf(
 }
 
 /**
- * Generates and downloads the Official Membership Approval Slip PDF
- * with official N-NEPEF logo, member photo, verification QR code, and Secretary General signature
+ * Generates and downloads the Official Membership Approval / Registration Slip as an image
  */
 export async function downloadApprovalSlipPdf(member: Member, settings?: ForumSettings): Promise<void> {
+  if (member.status === 'approved' || (member.status as string) === 'Active') {
+    await downloadApprovalSlipImage(member, settings);
+  } else {
+    await downloadRegistrationSlipImage(member, settings);
+  }
+}
+
+/**
+ * Legacy PDF generator for approval slip
+ */
+export async function generateApprovalSlipPdfLegacy(member: Member, settings?: ForumSettings): Promise<void> {
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
@@ -873,6 +875,9 @@ export function formatCardExpiry(dateStr?: string | null, issueDateStr?: string 
     clean = calculateTwoYearExpiryDate(issueDateStr);
   }
 
+  // Strip any leading "EXPIRES:" prefix if present
+  clean = clean.replace(/^EXPIRES:\s*/i, '').trim();
+
   // Strip ISO time component e.g. "2028-09-10T00:00:00+00:00" -> "2028-09-10"
   if (clean.includes('T')) {
     clean = clean.split('T')[0];
@@ -943,597 +948,265 @@ async function loadHtmlImage(url: string | null | undefined, fallbacks: string[]
 }
 
 /**
- * Draw 4 distinct badge icons for canvas info rows
+ * Captures an exact, razor-sharp HTML5 Canvas directly from the rendered DOM element of the Membership ID Card.
+ * Uses html2canvas with 3x scale print resolution and preserves 100% of typography, spacing, colors, and layout.
  */
-function drawBadgeUser(ctx: CanvasRenderingContext2D, x: number, y: number, size: number) {
-  ctx.fillStyle = '#00A3FF';
-  drawCanvasRoundRect(ctx, x, y, size, size, 10);
-  ctx.fill();
-
-  ctx.fillStyle = '#FFFFFF';
-  const cx = x + size / 2;
-  ctx.beginPath();
-  ctx.arc(cx, y + size * 0.35, size * 0.18, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(cx, y + size * 0.85, size * 0.32, Math.PI, 0);
-  ctx.fill();
-}
-
-function drawBadgeId(ctx: CanvasRenderingContext2D, x: number, y: number, size: number) {
-  ctx.fillStyle = '#002B66';
-  drawCanvasRoundRect(ctx, x, y, size, size, 10);
-  ctx.fill();
-
-  ctx.strokeStyle = '#FFFFFF';
-  ctx.lineWidth = 2.5;
-  const cw = size * 0.68;
-  const ch = size * 0.52;
-  const cx = x + (size - cw) / 2;
-  const cy = y + (size - ch) / 2;
-  drawCanvasRoundRect(ctx, cx, cy, cw, ch, 4);
-  ctx.stroke();
-
-  ctx.fillStyle = '#FFFFFF';
-  ctx.fillRect(cx + 4, cy + 4, 8, 8);
-  ctx.fillRect(cx + 15, cy + 5, cw - 19, 2.5);
-  ctx.fillRect(cx + 15, cy + 10, cw - 19, 2.5);
-  ctx.fillRect(cx + 4, cy + 16, cw - 8, 2);
-}
-
-function drawBadgeBuilding(ctx: CanvasRenderingContext2D, x: number, y: number, size: number) {
-  ctx.fillStyle = '#D81B60';
-  drawCanvasRoundRect(ctx, x, y, size, size, 10);
-  ctx.fill();
-
-  ctx.fillStyle = '#FFFFFF';
-  const bx = x + size * 0.18;
-  const bw = size * 0.64;
-  ctx.beginPath();
-  ctx.moveTo(x + size / 2, y + size * 0.22);
-  ctx.lineTo(bx, y + size * 0.38);
-  ctx.lineTo(bx + bw, y + size * 0.38);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.fillRect(bx, y + size * 0.38, bw, 3);
-  const colW = 4;
-  const colH = size * 0.32;
-  const colY = y + size * 0.44;
-  ctx.fillRect(bx + 4, colY, colW, colH);
-  ctx.fillRect(x + size / 2 - colW / 2, colY, colW, colH);
-  ctx.fillRect(bx + bw - 4 - colW, colY, colW, colH);
-  ctx.fillRect(bx - 2, colY + colH, bw + 4, 4);
-}
-
-function drawBadgeCalendar(ctx: CanvasRenderingContext2D, x: number, y: number, size: number) {
-  ctx.fillStyle = '#00A3FF';
-  drawCanvasRoundRect(ctx, x, y, size, size, 10);
-  ctx.fill();
-
-  ctx.strokeStyle = '#FFFFFF';
-  ctx.lineWidth = 2.5;
-  const cw = size * 0.62;
-  const ch = size * 0.54;
-  const cx = x + (size - cw) / 2;
-  const cy = y + (size - ch) / 2 + 2;
-  drawCanvasRoundRect(ctx, cx, cy, cw, ch, 4);
-  ctx.stroke();
-
-  ctx.fillStyle = '#FFFFFF';
-  ctx.fillRect(cx + 6, cy - 3, 3, 5);
-  ctx.fillRect(cx + cw - 9, cy - 3, 3, 5);
-  ctx.fillRect(cx, cy + 6, cw, 2);
-
-  for (let r = 0; r < 2; r++) {
-    for (let c = 0; c < 3; c++) {
-      ctx.fillRect(cx + 5 + c * 7, cy + 11 + r * 5, 2.5, 2.5);
+export async function captureCardElementToCanvas(element: HTMLElement): Promise<HTMLCanvasElement> {
+  // 1. Wait for document fonts to be fully loaded and rendered
+  if (typeof document !== 'undefined' && 'fonts' in document) {
+    try {
+      await document.fonts.ready;
+    } catch {
+      // Continue if font API unavailable
     }
   }
-}
 
-function drawBadgeSpecialization(ctx: CanvasRenderingContext2D, x: number, y: number, size: number) {
-  ctx.fillStyle = '#00A3FF';
-  drawCanvasRoundRect(ctx, x, y, size, size, 10);
-  ctx.fill();
+  // 2. Pre-load all images inside the element and convert external URLs to base64 Data URLs
+  // This guarantees that html2canvas will NOT perform remote network requests or trigger CORS/canvas taint issues.
+  const imgs = Array.from(element.querySelectorAll('img'));
+  await Promise.all(
+    imgs.map(async (img) => {
+      if (!img.complete) {
+        await new Promise<void>((resolve) => {
+          img.onload = () => resolve();
+          img.onerror = () => resolve();
+          setTimeout(resolve, 1500);
+        });
+      }
+      const src = img.currentSrc || img.src;
+      if (src && !src.startsWith('data:')) {
+        try {
+          const dataUrl = await getCachedBase64Image(src);
+          if (dataUrl && dataUrl.startsWith('data:')) {
+            img.src = dataUrl;
+          }
+        } catch {
+          // Continue
+        }
+      }
+    })
+  );
 
-  // Lightning bolt / zap icon in white
-  ctx.fillStyle = '#FFFFFF';
-  ctx.beginPath();
-  const cx = x + size / 2;
-  const cy = y + size / 2;
-  ctx.moveTo(cx - 1, cy - size * 0.32);
-  ctx.lineTo(cx + size * 0.22, cy - size * 0.05);
-  ctx.lineTo(cx + 2, cy - size * 0.05);
-  ctx.lineTo(cx + size * 0.12, cy + size * 0.32);
-  ctx.lineTo(cx - size * 0.22, cy + size * 0.05);
-  ctx.lineTo(cx - 2, cy + size * 0.05);
-  ctx.closePath();
-  ctx.fill();
-}
+  // 3. Small delay to let browser paint
+  await new Promise((resolve) => setTimeout(resolve, 60));
 
-function drawElectricalEmblem(ctx: CanvasRenderingContext2D, cx: number, cy: number, radius: number) {
-  ctx.save();
-  ctx.strokeStyle = '#00A3FF';
-  ctx.lineWidth = 4;
+  // 4. Capture element with html2canvas at 3x scale (300+ DPI razor-sharp print quality)
+  const canvas = await html2canvas(element, {
+    scale: 3,
+    useCORS: true,
+    allowTaint: true,
+    backgroundColor: null,
+    logging: false,
+    scrollX: 0,
+    scrollY: 0,
+    windowWidth: 1200,
+    windowHeight: 1200,
+    onclone: (_clonedDoc, clonedEl) => {
+      if (clonedEl) {
+        clonedEl.style.opacity = '1';
+        clonedEl.style.visibility = 'visible';
+        clonedEl.style.transform = 'none';
+        clonedEl.style.boxShadow = 'none';
+        // Enforce standard desktop width for card rendering
+        clonedEl.style.width = '364px';
+        clonedEl.style.minWidth = '364px';
+        clonedEl.style.maxWidth = '364px';
+      }
+    }
+  });
 
-  for (const angle of [45, -45]) {
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate((angle * Math.PI) / 180);
-    ctx.beginPath();
-    ctx.ellipse(0, 0, radius * 0.85, radius * 0.35, 0, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  ctx.fillStyle = '#00A3FF';
-  ctx.beginPath();
-  ctx.moveTo(cx - 2, cy - 14);
-  ctx.lineTo(cx + 8, cy - 2);
-  ctx.lineTo(cx + 1, cy - 2);
-  ctx.lineTo(cx + 4, cy + 14);
-  ctx.lineTo(cx - 8, cy + 2);
-  ctx.lineTo(cx - 1, cy + 2);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.restore();
+  return canvas;
 }
 
 /**
- * Generates an ultra-high resolution HTML5 Canvas of the Official Vertical / Portrait Membership ID Card
- * exactly following the reference image layout, typography, proportions, and position-based bottom color rule.
+ * Ensures that the rendered DOM elements for both front and back of the Membership ID Card
+ * are available for capture.
+ * If the card is already in the DOM (e.g. preview modal or page), it returns the existing elements.
+ * If not, it mounts the exact same MembershipCard React component into an offscreen container,
+ * waits for rendering/images to settle, and provides a cleanup callback to unmount it.
+ */
+export async function ensureRenderedCardElements(
+  member: Member,
+  settings?: ForumSettings
+): Promise<{ frontEl: HTMLElement; backEl: HTMLElement; cleanup: () => void }> {
+  const memberMatchId = String(member.id || member.membershipId || '');
+
+  // 1. Check if both front and back elements are already in the active DOM for this member
+  const existingFront = document.getElementById('nnepef-vertical-idcard-front');
+  const existingBack = document.getElementById('nnepef-vertical-idcard-back');
+
+  if (existingFront && existingBack) {
+    const frontId = existingFront.getAttribute('data-member-id');
+    const backId = existingBack.getAttribute('data-member-id');
+    const matchFront = !memberMatchId || !frontId || frontId === memberMatchId;
+    const matchBack = !memberMatchId || !backId || backId === memberMatchId;
+
+    if (matchFront && matchBack) {
+      return {
+        frontEl: existingFront,
+        backEl: existingBack,
+        cleanup: () => {}
+      };
+    }
+  }
+
+  // 2. Otherwise dynamically mount the exact MembershipCard React component offscreen
+  const container = document.createElement('div');
+  container.id = `temp-pdf-card-host-${Date.now()}`;
+  container.style.position = 'fixed';
+  container.style.left = '-9999px';
+  container.style.top = '0px';
+  container.style.width = '420px';
+  container.style.opacity = '1';
+  container.style.pointerEvents = 'none';
+  container.style.zIndex = '-9999';
+  container.style.visibility = 'visible';
+  document.body.appendChild(container);
+
+  const { createRoot } = await import('react-dom/client');
+  const React = await import('react');
+  const { MembershipCard } = await import('../components/MembershipCard');
+
+  const root = createRoot(container);
+  root.render(
+    React.createElement(MembershipCard, {
+      member,
+      settings,
+      logoUrl: settings?.logoUrl
+    })
+  );
+
+  const startTime = Date.now();
+  while (Date.now() - startTime < 4000) {
+    const frontEl = container.querySelector('#nnepef-vertical-idcard-front') as HTMLElement;
+    const backEl = container.querySelector('#nnepef-vertical-idcard-back') as HTMLElement;
+    if (frontEl && backEl) {
+      // Allow QR code generation and layout to settle
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      return {
+        frontEl,
+        backEl,
+        cleanup: () => {
+          try {
+            root.unmount();
+            if (document.body.contains(container)) {
+              document.body.removeChild(container);
+            }
+          } catch (e) {
+            console.warn('[pdfService] Cleanup error:', e);
+          }
+        }
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  throw new Error('Failed to mount MembershipCard preview for PDF export');
+}
+
+/**
+ * Generates an ultra-high resolution HTML5 Canvas of the Official Vertical Membership ID Card side.
+ * Captures directly from the EXACT rendered Preview component.
+ * WHAT YOU SEE IN THE PREVIEW = EXACTLY WHAT YOU GET IN THE PDF / DOWNLOAD.
  */
 export async function generateVerticalIdCardCanvas(
   member: Member,
   settings?: ForumSettings,
   side: 'front' | 'back' = 'front'
 ): Promise<HTMLCanvasElement> {
-  const canvas = document.createElement('canvas');
-  // High resolution portrait CR80 ratio (800 x 1268px - exact 54mm x 85.6mm ratio)
-  canvas.width = 800;
-  canvas.height = 1268;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    throw new Error('Canvas 2D context not supported');
+  const { frontEl, backEl, cleanup } = await ensureRenderedCardElements(member, settings);
+  try {
+    const targetEl = side === 'front' ? frontEl : backEl;
+    return await captureCardElementToCanvas(targetEl);
+  } finally {
+    cleanup();
   }
-
-  // Preload graphics safely via base64
-  const [logoImg, photoImg, sigImg] = await Promise.all([
-    loadHtmlImage(OFFICIAL_ID_CARD_LOGO, ['/nnepef-id-card-logo.jpg', '/nnepef-id-card-logo.png', settings?.logoUrl || OFFICIAL_NNEPEF_LOGO]),
-    loadHtmlImage(member.passportUrl || member.passportPhotoUrl),
-    loadHtmlImage((settings as any)?.signatureUrl || OFFICIAL_SECRETARY_SIGNATURE, [OFFICIAL_SECRETARY_SIGNATURE, '/secretary-signature.png'])
-  ]);
-
-  const cleanName = (member.fullName || 'REGISTERED MEMBER').toUpperCase();
-  const formattedId = formatFourDigitMembershipId(member.membershipId);
-  const cleanId = (formattedId || (member.applicationReference ? `REF-${member.applicationReference}` : 'PENDING')).toUpperCase();
-  const cleanPosition = (member.position || 'MEMBER').trim().toUpperCase();
-  const cleanSpecialization = (member.specialization || (member as any).speciality || member.occupation || 'ELECTRICAL ENGINEERING').toUpperCase();
-  const cleanExpiry = formatCardExpiry(member.expiryDate, member.issueDate);
-  const isExecutive = hasExecutiveColoredBottom(cleanPosition);
-  const isExactMember = cleanPosition === 'MEMBER';
-
-  if (side === 'front') {
-    // 1. Blue Outer Card Background
-    ctx.fillStyle = '#0052CC';
-    drawCanvasRoundRect(ctx, 0, 0, 800, 1268, 44);
-    ctx.fill();
-
-    // 2. Top Header on Blue Background (Shifted slightly downward to create clean space at top)
-    // Line 1: NORTHERN NIGERIAN ELECTRICAL — MUST BE STRONG YELLOW ONLY
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#FFDE00';
-    ctx.font = 'bold 36px Arial, sans-serif';
-    ctx.fillText('NORTHERN NIGERIAN ELECTRICAL', 400, 80);
-
-    // Line 2: PRACTITIONERS & ENGINEERS — White
-    ctx.fillStyle = '#FFFFFF';
-    ctx.font = 'bold 36px Arial, sans-serif';
-    ctx.fillText('PRACTITIONERS & ENGINEERS', 400, 122);
-
-    // Line 3: FORUM (N-NPEEF) — FORUM in white, (N-NPEEF) in pink/magenta
-    const forumWord = 'FORUM ';
-    const acronymWord = '(N-NPEEF)';
-    ctx.font = 'bold 36px Arial, sans-serif';
-    const forumW = ctx.measureText(forumWord).width;
-    const acronymW = ctx.measureText(acronymWord).width;
-    const startL3X = 400 - (forumW + acronymW) / 2;
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#FFFFFF';
-    ctx.fillText(forumWord, startL3X, 164);
-    ctx.fillStyle = '#E11D48';
-    ctx.fillText(acronymWord, startL3X + forumW, 164);
-
-    // 3. MEMBERSHIP I.D CARD Pill Ribbon (White pill badge with pink/magenta text style) - NO address on front
-    const pillW = 450;
-    const pillH = 48;
-    const pillX = 400 - pillW / 2;
-    const pillY = 200;
-
-    ctx.fillStyle = '#FFFFFF';
-    drawCanvasRoundRect(ctx, pillX, pillY, pillW, pillH, 24);
-    ctx.fill();
-
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#E11D48';
-    ctx.font = 'bold 25px Arial, sans-serif';
-    ctx.fillText('MEMBERSHIP I.D CARD', 400, pillY + 33);
-
-    // 4. Inner White Central Container with Cyan Rounded Border
-    const whiteX = 38;
-    const whiteY = 270;
-    const whiteW = 724;
-    const whiteH = 932;
-    const whiteR = 36;
-
-    // Fill white
-    ctx.fillStyle = '#FFFFFF';
-    drawCanvasRoundRect(ctx, whiteX, whiteY, whiteW, whiteH, whiteR);
-    ctx.fill();
-
-    // Cyan Border
-    ctx.strokeStyle = '#00A3FF';
-    ctx.lineWidth = 7;
-    drawCanvasRoundRect(ctx, whiteX, whiteY, whiteW, whiteH, whiteR);
-    ctx.stroke();
-
-    // 5. Inside White Container
-    // Top-Left: New Official Master ID Card Logo (LARGER and MORE PROMINENT)
-    if (logoImg) {
-      try {
-        ctx.save();
-        ctx.drawImage(logoImg, 56, 284, 150, 150);
-        ctx.restore();
-      } catch (e) {
-        console.warn('Canvas logo error:', e);
-      }
-    }
-
-    // Top-Right: Cyan / Blue Electrical Atom Northern Symbol
-    drawElectricalEmblem(ctx, 688, 359, 56);
-
-    // Center: Member Photograph in Prominent Circular Frame (Natural face, perfectly proportioned)
-    const photoCx = 400;
-    const photoCy = 449;
-    const photoR = 145;
-
-    // Outer Deep Blue Ring
-    ctx.strokeStyle = '#0052CC';
-    ctx.lineWidth = 6;
-    ctx.beginPath();
-    ctx.arc(photoCx, photoCy, photoR + 10, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // Inner Cyan Ring
-    ctx.strokeStyle = '#00A3FF';
-    ctx.lineWidth = 3.5;
-    ctx.beginPath();
-    ctx.arc(photoCx, photoCy, photoR + 3, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // Clip & Draw Photo inside Circle - Aspect-ratio preserving (NEVER squeezed or distorted)
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(photoCx, photoCy, photoR, 0, Math.PI * 2);
-    ctx.clip();
-
-    if (photoImg) {
-      try {
-        const imgW = (photoImg as any).naturalWidth || photoImg.width || 1;
-        const imgH = (photoImg as any).naturalHeight || photoImg.height || 1;
-        let sx = 0, sy = 0, sSize = Math.min(imgW, imgH);
-        if (imgW > imgH) {
-          sx = (imgW - imgH) / 2;
-        } else if (imgH > imgW) {
-          sy = (imgH - imgW) / 2;
-        }
-        ctx.drawImage(photoImg, sx, sy, sSize, sSize, photoCx - photoR, photoCy - photoR, photoR * 2, photoR * 2);
-      } catch (err) {
-        console.warn('Canvas photo draw error:', err);
-        drawCanvasCircularAvatar(ctx, photoCx, photoCy, photoR);
-      }
-    } else {
-      drawCanvasCircularAvatar(ctx, photoCx, photoCy, photoR);
-    }
-    ctx.restore();
-
-    // 6. Member Info Rows (4 Rows on Front: Name, ID, Position, Expiry — SPECIALITY IS ON BACK ONLY)
-    // Row 1: Member Name — PINK/MAGENTA, NOTICEABLY LARGER, BOLD and highly prominent
-    const row1BadgeY = 644;
-    const row1TextY = 689;
-    drawBadgeUser(ctx, 66, row1BadgeY, 58);
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#E11D48';
-    let nameFontSize = 44;
-    ctx.font = `bold ${nameFontSize}px Arial, sans-serif`;
-    while (140 + ctx.measureText(cleanName).width > 735 && nameFontSize > 28) {
-      nameFontSize -= 1;
-      ctx.font = `bold ${nameFontSize}px Arial, sans-serif`;
-    }
-    ctx.fillText(cleanName, 140, row1TextY);
-
-    // Row 2: Membership ID Number — DARK BLUE/NAVY, NOTICEABLY LARGER & BOLDER
-    const row2BadgeY = 764;
-    const row2TextY = 807;
-    drawBadgeId(ctx, 66, row2BadgeY, 58);
-    ctx.font = 'bold 33px Georgia, serif';
-    ctx.fillStyle = '#002B66';
-    const idPrefix = 'MEMBERSHIP ID: ';
-    ctx.fillText(idPrefix, 140, row2TextY);
-    const idLabelW = ctx.measureText(idPrefix).width;
-
-    let idFontSize = 36;
-    ctx.font = `bold ${idFontSize}px Arial, sans-serif`;
-    while (140 + idLabelW + ctx.measureText(cleanId).width > 735 && idFontSize > 22) {
-      idFontSize -= 1;
-      ctx.font = `bold ${idFontSize}px Arial, sans-serif`;
-    }
-    ctx.fillStyle = '#002B66';
-    ctx.fillText(cleanId, 140 + idLabelW, row2TextY);
-
-    // Row 3: POSITION — GREEN, NOTICEABLY LARGER & PROMINENT
-    const row3BadgeY = 884;
-    const row3TextY = 927;
-    drawBadgeBuilding(ctx, 66, row3BadgeY, 58);
-    ctx.font = 'bold 33px Georgia, serif';
-    ctx.fillStyle = '#002B66';
-    ctx.fillText('POSITION: ', 140, row3TextY);
-    const posLabelW = ctx.measureText('POSITION: ').width;
-    ctx.font = 'bold 36px Georgia, serif';
-    ctx.fillStyle = '#15803D';
-    ctx.fillText(cleanPosition, 140 + posLabelW, row3TextY);
-
-    // Row 4: Expiry — "EXPIRES: " in navy, date in pink/magenta — LARGER & HIGHLY READABLE
-    const row4BadgeY = 1004;
-    const row4TextY = 1047;
-    drawBadgeCalendar(ctx, 66, row4BadgeY, 58);
-    ctx.font = 'bold 33px Georgia, serif';
-    ctx.fillStyle = '#002B66';
-    ctx.fillText('EXPIRES: ', 140, row4TextY);
-    const expLabelW = ctx.measureText('EXPIRES: ').width;
-    ctx.font = 'bold 36px Arial, sans-serif';
-    ctx.fillStyle = '#E11D48';
-    ctx.fillText(cleanExpiry, 140 + expLabelW, row4TextY);
-
-    // 7. POSITION-BASED BOTTOM SECTION
-    // RULE 1: If POSITION === 'MEMBER' -> Bottom is BLUE ONLY
-    // RULE 2: If POSITION !== 'MEMBER' (Executive) -> Preserved subtle executive curved accent
-    if (isExecutive) {
-      ctx.save();
-      drawCanvasRoundRect(ctx, 0, 0, 800, 1268, 44);
-      ctx.clip();
-
-      ctx.fillStyle = '#E11D48';
-      ctx.beginPath();
-      ctx.moveTo(0, 1268);
-      ctx.lineTo(0, 1205);
-      ctx.bezierCurveTo(240, 1246, 560, 1246, 800, 1205);
-      ctx.lineTo(800, 1268);
-      ctx.closePath();
-      ctx.fill();
-
-      ctx.strokeStyle = '#00A3FF';
-      ctx.lineWidth = 4.5;
-      ctx.beginPath();
-      ctx.moveTo(0, 1205);
-      ctx.bezierCurveTo(240, 1246, 560, 1246, 800, 1205);
-      ctx.stroke();
-
-      ctx.restore();
-    }
-  } else {
-    // =========================================================================
-    // BACK SIDE OF VERTICAL CARD (Strong Blue Identity, Official Kano Office & Tel)
-    // =========================================================================
-    // 1. Outer Blue Background
-    ctx.fillStyle = '#0052CC';
-    drawCanvasRoundRect(ctx, 0, 0, 800, 1268, 44);
-    ctx.fill();
-
-    // 2. White Container with Cyan Border
-    const whiteX = 38;
-    const whiteY = 38;
-    const whiteW = 724;
-    const whiteH = 1192;
-    const whiteR = 40;
-
-    ctx.fillStyle = '#FFFFFF';
-    drawCanvasRoundRect(ctx, whiteX, whiteY, whiteW, whiteH, whiteR);
-    ctx.fill();
-
-    ctx.strokeStyle = '#00A3FF';
-    ctx.lineWidth = 8;
-    drawCanvasRoundRect(ctx, whiteX, whiteY, whiteW, whiteH, whiteR);
-    ctx.stroke();
-
-    // 3. Organization Header on White Container
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#002B66';
-    ctx.font = 'bold 28px Arial, sans-serif';
-    ctx.fillText('NORTHERN NIGERIAN ELECTRICAL', 400, 115);
-
-    ctx.font = 'bold 28px Arial, sans-serif';
-    ctx.fillText('PRACTITIONERS & ENGINEERS', 400, 152);
-
-    ctx.font = 'bold 28px Arial, sans-serif';
-    const bForumTxt = 'FORUM ';
-    const bAcronymTxt = '(N-NPEEF)';
-    const bForumW = ctx.measureText(bForumTxt).width;
-    const bAcronymW = ctx.measureText(bAcronymTxt).width;
-    const bTotalL3W = bForumW + bAcronymW;
-    const bStartL3X = 400 - bTotalL3W / 2;
-
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#002B66';
-    ctx.fillText(bForumTxt, bStartL3X, 190);
-    ctx.fillStyle = '#E11D48';
-    ctx.fillText(bAcronymTxt, bStartL3X + bForumW, 190);
-
-    // Head Office Line: In official Deep Blue
-    ctx.font = 'bold 15px Arial, sans-serif';
-    const bHeadPrefix = 'Head Office: ';
-    const bHeadBody = settings?.headquarters || 'Beside Tashar Rigiyar Zaki, opp. Brilliant Academy, Kano';
-    const bHeadPreW = ctx.measureText(bHeadPrefix).width;
-    const bHeadBodyW = ctx.measureText(bHeadBody).width;
-    const bHeadTotalW = bHeadPreW + bHeadBodyW;
-    const bHeadStartX = 400 - bHeadTotalW / 2;
-
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#0052CC';
-    ctx.fillText(bHeadPrefix, bHeadStartX, 230);
-    ctx.fillStyle = '#002B66';
-    ctx.fillText(bHeadBody, bHeadStartX + bHeadPreW, 230);
-
-    // Tel Line: EXACTLY THREE phone numbers: 07036144377, 08133771460, 09067543760
-    const bTelPrefix = 'Tel: ';
-    const bTelBody = '07036144377, 08133771460, 09067543760';
-    const bTelPreW = ctx.measureText(bTelPrefix).width;
-    const bTelBodyW = ctx.measureText(bTelBody).width;
-    const bTelTotalW = bTelPreW + bTelBodyW;
-    const bTelStartX = 400 - bTelTotalW / 2;
-
-    ctx.fillStyle = '#0052CC';
-    ctx.fillText(bTelPrefix, bTelStartX, 258);
-    ctx.fillStyle = '#002B66';
-    ctx.fillText(bTelBody, bTelStartX + bTelPreW, 258);
-
-    // 4. AREA OF SPECIALITY / FIELD (MOVED TO BACK OF ID CARD - PROMINENT & PROFESSIONAL)
-    const specBoxX = 70;
-    const specBoxY = 286;
-    const specBoxW = 660;
-    const specBoxH = 78;
-    ctx.fillStyle = '#F0F9FF';
-    drawCanvasRoundRect(ctx, specBoxX, specBoxY, specBoxW, specBoxH, 16);
-    ctx.fill();
-
-    ctx.strokeStyle = '#00A3FF';
-    ctx.lineWidth = 2.5;
-    drawCanvasRoundRect(ctx, specBoxX, specBoxY, specBoxW, specBoxH, 16);
-    ctx.stroke();
-
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#0052CC';
-    ctx.font = 'bold 15px Arial, sans-serif';
-    ctx.fillText('AREA OF SPECIALITY / FIELD', 400, specBoxY + 28);
-
-    ctx.fillStyle = '#002B66';
-    let specFontSize = 25;
-    ctx.font = `bold ${specFontSize}px Georgia, serif`;
-    while (ctx.measureText(cleanSpecialization).width > 620 && specFontSize > 16) {
-      specFontSize -= 1;
-      ctx.font = `bold ${specFontSize}px Georgia, serif`;
-    }
-    ctx.fillText(cleanSpecialization, 400, specBoxY + 60);
-
-    // 5. Large Centered QR Code
-    const verifyUrl = `https://nepef.org.ng/verify?id=${encodeURIComponent(cleanId)}`;
-    try {
-      const qrDataUrl = await QRCode.toDataURL(verifyUrl, {
-        width: 380,
-        margin: 1,
-        color: {
-          dark: '#002B66',
-          light: '#FFFFFF'
-        }
-      });
-      const qrImg = await loadHtmlImage(qrDataUrl);
-      if (qrImg) {
-        ctx.strokeStyle = '#BAE6FD';
-        ctx.lineWidth = 1.5;
-        drawCanvasRoundRect(ctx, 205, 385, 390, 390, 16);
-        ctx.stroke();
-
-        ctx.drawImage(qrImg, 210, 390, 380, 380);
-      }
-    } catch (e) {
-      console.warn('QR code generation error:', e);
-    }
-
-    // 6. MEMBERSHIP I.D CARD Pill Button with Cyan Border in Blue
-    const bPillW = 440;
-    const bPillH = 58;
-    const bPillX = 400 - bPillW / 2;
-    const bPillY = 800;
-
-    ctx.fillStyle = '#FFFFFF';
-    drawCanvasRoundRect(ctx, bPillX, bPillY, bPillW, bPillH, 18);
-    ctx.fill();
-
-    ctx.strokeStyle = '#00A3FF';
-    ctx.lineWidth = 4.5;
-    drawCanvasRoundRect(ctx, bPillX, bPillY, bPillW, bPillH, 18);
-    ctx.stroke();
-
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#002B66';
-    ctx.font = 'bold 27px "Arial Black", Arial, sans-serif';
-    ctx.fillText('MEMBERSHIP I.D CARD', 400, bPillY + 39);
-
-    // 7. Authorized Signature on Back Side ONLY (Exact Match to User Reference Photo)
-    if (sigImg) {
-      try {
-        ctx.drawImage(sigImg, 260, 875, 280, 150);
-      } catch (e) {
-        console.warn('Back canvas signature draw error:', e);
-      }
-    }
-
-    // Signature title line
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#002B66';
-    ctx.font = 'bold 18px Arial, sans-serif';
-    ctx.fillText('SECRETARY GENERAL', 400, 1045);
-
-    ctx.fillStyle = '#64748B';
-    ctx.font = 'normal 15px Arial, sans-serif';
-    ctx.fillText('This card remains the property of N-NEPEF 2020.', 400, 1074);
-    ctx.fillText('If found, please return to the Head Office address above.', 400, 1096);
-
-  }
-
-  return canvas;
 }
 
 /**
  * Downloads the Official High-Quality Vertical / Portrait Membership ID Card as a PDF
  * (Strictly Portrait CR80 format, centered, high-resolution, compatible with Android/mobile & desktop)
+ * Highly optimized with JPEG resource compression for minimal file size (<300KB) while preserving sharp readability.
  */
-export async function downloadMemberIdCardPdf(member: Member, settings?: ForumSettings): Promise<void> {
-  // 1. Generate Front and Back High-Resolution Canvas Images
-  const frontCanvas = await generateVerticalIdCardCanvas(member, settings, 'front');
-  const backCanvas = await generateVerticalIdCardCanvas(member, settings, 'back');
+export async function downloadMemberIdCardPdf(
+  member: Member,
+  settings?: ForumSettings,
+  clickEvent?: MouseEvent | React.MouseEvent
+): Promise<void> {
+  // 1. Ensure card preview is mounted and capture both sides simultaneously
+  const { frontEl, backEl, cleanup } = await ensureRenderedCardElements(member, settings);
+  let frontCanvas: HTMLCanvasElement;
+  let backCanvas: HTMLCanvasElement;
 
-  const frontDataUrl = frontCanvas.toDataURL('image/png');
-  const backDataUrl = backCanvas.toDataURL('image/png');
+  try {
+    [frontCanvas, backCanvas] = await Promise.all([
+      captureCardElementToCanvas(frontEl),
+      captureCardElementToCanvas(backEl)
+    ]);
+  } finally {
+    cleanup();
+  }
 
-  // Standard CR80 ISO/IEC 7810 vertical card size in mm (54mm x 85.6mm)
+  // Convert to high-quality JPEG (0.95) for instant jsPDF embedding and razor-sharp 300+ DPI print quality
+  const frontDataUrl = frontCanvas.toDataURL('image/jpeg', 0.95);
+  const backDataUrl = backCanvas.toDataURL('image/jpeg', 0.95);
+
+  // Standard CR80 width in mm
   const cardWidthMm = 54;
-  const cardHeightMm = 85.6;
+  // Exact proportional height matching the rendered card aspect ratio
+  const frontRatio = (frontCanvas.height || 1268) / (frontCanvas.width || 800);
+  const backRatio = (backCanvas.height || 1268) / (backCanvas.width || 800);
 
-  // 2. Initialize jsPDF in strictly Portrait orientation
+  const frontHeightMm = Number((cardWidthMm * frontRatio).toFixed(2));
+  const backHeightMm = Number((cardWidthMm * backRatio).toFixed(2));
+
+  // 2. Initialize jsPDF in strictly Portrait orientation matching exact card dimensions
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
-    format: [cardWidthMm, cardHeightMm]
+    format: [cardWidthMm, frontHeightMm],
+    compress: true
   });
 
-  // Page 1: Front of the vertical card
-  doc.addImage(frontDataUrl, 'PNG', 0, 0, cardWidthMm, cardHeightMm, undefined, 'FAST');
+  // Page 1: Front of the vertical card (1:1 pixel-perfect reproduction of preview)
+  doc.addImage(frontDataUrl, 'JPEG', 0, 0, cardWidthMm, frontHeightMm, undefined, 'FAST');
 
   // Page 2: Back of the vertical card
-  doc.addPage([cardWidthMm, cardHeightMm], 'portrait');
-  doc.addImage(backDataUrl, 'PNG', 0, 0, cardWidthMm, cardHeightMm, undefined, 'FAST');
+  doc.addPage([cardWidthMm, backHeightMm], 'portrait');
+  doc.addImage(backDataUrl, 'JPEG', 0, 0, cardWidthMm, backHeightMm, undefined, 'FAST');
 
-  // 3. Save via blob and downloadFileSafely for 100% Android / Mobile / Desktop reliability
+  // 3. Multi-strategy download to guarantee the PDF downloads across all devices, mobile browsers & iframes
   const cleanId = (member.membershipId || member.fullName || 'Member').replace(/[^a-zA-Z0-9_-]/g, '_');
   const filename = `NNEPEF-Vertical-IDCard-${cleanId}.pdf`;
 
-  const pdfBlob = doc.output('blob');
-  const blobUrl = URL.createObjectURL(pdfBlob);
-  await downloadFileSafely(blobUrl, filename);
-  setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
+  // Strategy A: Blob URL with application/octet-stream (fastest, cleanest, zero browser hang)
+  try {
+    const pdfBlob = doc.output('blob');
+    const octetBlob = new Blob([pdfBlob], { type: 'application/octet-stream' });
+    const blobUrl = URL.createObjectURL(octetBlob);
+    const downloaded = await downloadFileSafely(blobUrl, filename, clickEvent);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 20000);
+    if (downloaded) return;
+  } catch (errA) {
+    console.warn('[pdfService] Strategy A (blob URL) failed:', errA);
+  }
+
+  // Strategy B: Base64 octet-stream Data URI download
+  try {
+    const rawDataUri = doc.output('datauristring');
+    const octetStreamUri = rawDataUri.replace(/^data:application\/[^;]+/, 'data:application/octet-stream');
+    const downloaded = await downloadFileSafely(octetStreamUri, filename, clickEvent);
+    if (downloaded) return;
+  } catch (errB) {
+    console.warn('[pdfService] Strategy B (octet-stream data URI) failed:', errB);
+  }
+
+  // Strategy C: Native doc.save
+  try {
+    doc.save(filename);
+  } catch (errC) {
+    console.warn('[pdfService] Strategy C (doc.save) failed:', errC);
+  }
 }
 
 

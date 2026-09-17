@@ -20,6 +20,7 @@ import {
   CMSFile
 } from '../types';
 import { MembershipCard } from './MembershipCard';
+import { formatCardExpiry } from '../services/pdfService';
 import { ReceiptManagement } from './ReceiptManagement';
 import { PaymentSettingsManager } from './PaymentSettingsManager';
 import { FeesAndRevenueManager } from './FeesAndRevenueManager';
@@ -1197,6 +1198,7 @@ CREATE POLICY "Admin Full Access Payments"
       const updatedMember: Member = {
         ...editingMember,
         fullName: editingMember.fullName.trim(),
+        gender: (editingMember.gender === 'Female' ? 'Female' : 'Male') as 'Male' | 'Female',
         membershipId: editingMember.membershipId ? editingMember.membershipId.trim().toUpperCase() : '',
         phone: editingMember.phone ? editingMember.phone.trim() : '',
         email: editingMember.email ? editingMember.email.trim() : '',
@@ -2225,7 +2227,7 @@ CREATE POLICY "Admin Full Access Payments"
                               <img src={m.passportUrl} alt="" className="w-10 h-10 rounded-xl object-cover border" />
                               <div>
                                 <div className="font-bold text-slate-900 dark:text-white">{m.fullName}</div>
-                                <div className="text-[11px] text-slate-500">{m.email} • {m.phone}</div>
+                                <div className="text-[11px] text-slate-500">{m.email} • {m.phone} • <span className="font-semibold text-slate-700 dark:text-slate-300">{m.gender || 'Male'}</span></div>
                               </div>
                             </div>
                           </td>
@@ -2285,7 +2287,7 @@ CREATE POLICY "Admin Full Access Payments"
                                     title={`Expired on ${m.expiryDate}`}
                                   >
                                     <Clock className="w-3 h-3 text-rose-600" />
-                                    Expired ({m.expiryDate})
+                                    EXPIRES: {formatCardExpiry(m.expiryDate)}
                                   </span>
                                 );
                               }
@@ -2405,17 +2407,17 @@ CREATE POLICY "Admin Full Access Payments"
                           </>
                         )}
 
-                        {/* Download Member Dossier PDF */}
+                        {/* Download Member Dossier Image */}
                         <button
                           onClick={async () => {
                             try {
                               await downloadMemberProfilePdf(m, settings);
                             } catch (err) {
-                              console.error('Member profile PDF error:', err);
+                              console.error('Member profile download error:', err);
                             }
                           }}
                           className="p-1.5 rounded-lg bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300 hover:bg-purple-200 cursor-pointer"
-                          title="Download Member Dossier (PDF)"
+                          title="Download Member Details (Image)"
                         >
                           <FileText className="w-3.5 h-3.5" />
                         </button>
@@ -2613,11 +2615,12 @@ CREATE POLICY "Admin Full Access Payments"
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
               <div className="space-y-1">
-                <label className="font-bold text-slate-700 dark:text-slate-300">Membership ID</label>
+                <label className="font-bold text-slate-700 dark:text-slate-300">Membership ID Number</label>
                 <input
                   type="text"
-                  value={editingMember.membershipId}
-                  onChange={(e) => setEditingMember({ ...editingMember, membershipId: e.target.value })}
+                  value={editingMember.membershipId || ''}
+                  onChange={(e) => setEditingMember({ ...editingMember, membershipId: e.target.value.toUpperCase() })}
+                  placeholder="e.g. NNEPEF/KN/2020/001"
                   className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono font-bold text-[#2EA3F2]"
                 />
               </div>
@@ -2630,6 +2633,18 @@ CREATE POLICY "Admin Full Access Payments"
                   onChange={(e) => setEditingMember({ ...editingMember, fullName: e.target.value })}
                   className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
                 />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-bold text-slate-700 dark:text-slate-300">Gender</label>
+                <select
+                  value={editingMember.gender || 'Male'}
+                  onChange={(e) => setEditingMember({ ...editingMember, gender: e.target.value as 'Male' | 'Female' })}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
+                >
+                  <option value="Male">Male</option>
+                  <option value="Female">Female</option>
+                </select>
               </div>
 
               <div className="space-y-1">
@@ -3073,7 +3088,7 @@ CREATE POLICY "Admin Full Access Payments"
                     </span>
                   </div>
                   <p className="text-xs text-slate-500 font-mono">
-                    ID: {viewingReceiptMember.membershipId || 'UNASSIGNED'} • {viewingReceiptMember.state} State • {viewingReceiptMember.email}
+                    ID: {viewingReceiptMember.membershipId || (viewingReceiptMember.existingMembershipId ? `Submitted: ${viewingReceiptMember.existingMembershipId}` : 'UNASSIGNED')} • Gender: {viewingReceiptMember.gender || 'Male'} • {viewingReceiptMember.state} State • {viewingReceiptMember.email}
                   </p>
                 </div>
               </div>
@@ -3214,6 +3229,73 @@ CREATE POLICY "Admin Full Access Payments"
 
             </div>
 
+            {/* Complete Member Information available to Admin */}
+            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/80 space-y-3 text-xs">
+              <div className="font-bold text-[#0A2E73] dark:text-[#2EA3F2] uppercase tracking-wider flex items-center justify-between border-b border-slate-200 dark:border-slate-700 pb-2">
+                <span className="flex items-center gap-1.5">
+                  <User className="w-4 h-4" />
+                  <span>Complete Member Information</span>
+                </span>
+                <span className="text-[11px] font-mono text-slate-500 font-semibold">
+                  Ref: {viewingReceiptMember.applicationReference || viewingReceiptMember.verificationCode || 'N/A'}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+                <div>
+                  <span className="text-slate-500 text-[10px] uppercase font-mono block">Membership ID Number</span>
+                  <span className="font-mono font-bold text-[#0A2E73] dark:text-[#2EA3F2] text-sm">
+                    {viewingReceiptMember.membershipId || (
+                      <span className="text-amber-600 dark:text-amber-400 font-normal italic text-xs">
+                        {viewingReceiptMember.existingMembershipId ? `Submitted: ${viewingReceiptMember.existingMembershipId}` : 'Pending Assignment'}
+                      </span>
+                    )}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 text-[10px] uppercase font-mono block">Gender</span>
+                  <span className="font-bold text-slate-900 dark:text-white px-2 py-0.5 rounded-md bg-slate-200 dark:bg-slate-700 inline-block">
+                    {viewingReceiptMember.gender || 'Male'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 text-[10px] uppercase font-mono block">Date of Birth</span>
+                  <span className="font-bold text-slate-900 dark:text-white">
+                    {viewingReceiptMember.dob || viewingReceiptMember.dateOfBirth || 'Not provided'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 text-[10px] uppercase font-mono block">National ID / NIN</span>
+                  <span className="font-mono font-bold text-slate-900 dark:text-white">
+                    {viewingReceiptMember.nin || viewingReceiptMember.ninNumber || 'Not provided'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 text-[10px] uppercase font-mono block">Phone Number</span>
+                  <span className="font-mono font-bold text-slate-900 dark:text-white">
+                    {viewingReceiptMember.phone}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 text-[10px] uppercase font-mono block">Email Address</span>
+                  <span className="font-bold text-slate-900 dark:text-white truncate block">
+                    {viewingReceiptMember.email || 'Not provided'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 text-[10px] uppercase font-mono block">State &amp; LGA</span>
+                  <span className="font-bold text-slate-900 dark:text-white">
+                    {viewingReceiptMember.state} {viewingReceiptMember.lga ? `(${viewingReceiptMember.lga})` : ''}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 text-[10px] uppercase font-mono block">Residential Address</span>
+                  <span className="font-bold text-slate-900 dark:text-white truncate block">
+                    {viewingReceiptMember.address || viewingReceiptMember.residentialAddress || 'Not provided'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
             {/* Educational Information & Qualifications Box in Audit Modal */}
             {(() => {
               const edu = parseEducationDetails(viewingReceiptMember);
@@ -3320,7 +3402,8 @@ CREATE POLICY "Admin Full Access Payments"
                         <body>
                           <h1>N-NEPEF 2020 Secretariat Member Dossier</h1>
                           <p><strong>Member Name:</strong> ${viewingReceiptMember.fullName}</p>
-                          <p><strong>Membership ID:</strong> ${viewingReceiptMember.membershipId}</p>
+                          <p><strong>Membership ID Number:</strong> ${viewingReceiptMember.membershipId || (viewingReceiptMember.existingMembershipId ? `Submitted: ${viewingReceiptMember.existingMembershipId}` : 'UNASSIGNED')}</p>
+                          <p><strong>Gender:</strong> ${viewingReceiptMember.gender || 'Male'}</p>
                           <p><strong>State Chapter:</strong> ${viewingReceiptMember.state}</p>
                           <p><strong>Specialization:</strong> ${viewingReceiptMember.specialization}</p>
                           <p><strong>Educational Background:</strong> ${(() => {
@@ -3410,7 +3493,7 @@ CREATE POLICY "Admin Full Access Payments"
                   {approvingMember.fullName}
                 </h4>
                 <p className="text-xs text-slate-600 dark:text-slate-300 truncate">
-                  {approvingMember.specialization} • {approvingMember.state} State
+                  {approvingMember.specialization} • Gender: {approvingMember.gender || 'Male'} • {approvingMember.state} State
                 </p>
                 <div className="flex items-center gap-2 text-[11px] text-slate-500 font-mono">
                   <span>Phone: {approvingMember.phone}</span>
@@ -3431,7 +3514,7 @@ CREATE POLICY "Admin Full Access Payments"
             {/* Form Inputs */}
             <div className="space-y-4">
               {/* Member-Submitted ID Banner if present */}
-              {(approvingMember.existingMembershipId || approvingMember.requestedMembershipId) && (
+              {(approvingMember.membershipId || approvingMember.existingMembershipId || approvingMember.requestedMembershipId) && (
                 <div className="p-3.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
                   <div className="space-y-0.5">
                     <span className="font-bold text-amber-800 dark:text-amber-300 flex items-center gap-1.5">
@@ -3439,7 +3522,7 @@ CREATE POLICY "Admin Full Access Payments"
                       <span>Lambar da Mamba ya shigar (Member Submitted ID):</span>
                     </span>
                     <p className="font-mono font-bold text-slate-900 dark:text-white text-sm">
-                      {approvingMember.existingMembershipId || approvingMember.requestedMembershipId}
+                      {approvingMember.membershipId || approvingMember.existingMembershipId || approvingMember.requestedMembershipId}
                     </p>
                     <p className="text-[10px] text-amber-700 dark:text-amber-400">
                       Ba ta fara aiki ba tukuna. Idan kuna son amincewa da wannan lambar, danna maballin gefe.
@@ -3447,7 +3530,7 @@ CREATE POLICY "Admin Full Access Payments"
                   </div>
                   <button
                     type="button"
-                    onClick={() => setAssignedMembershipId((approvingMember.existingMembershipId || approvingMember.requestedMembershipId)!)}
+                    onClick={() => setAssignedMembershipId((approvingMember.membershipId || approvingMember.existingMembershipId || approvingMember.requestedMembershipId)!)}
                     className="px-3 py-1.5 text-xs font-bold bg-amber-600 hover:bg-amber-700 active:scale-95 text-white rounded-xl shadow-xs transition-all shrink-0 cursor-pointer"
                   >
                     Yi Amfani Da Ita (Use This ID)
@@ -3587,7 +3670,10 @@ CREATE POLICY "Admin Full Access Payments"
                   <div>
                     <p className="font-extrabold uppercase tracking-wide">This Membership ID Card has EXPIRED</p>
                     <p className="text-[11px] text-amber-800/90 dark:text-amber-300/90">
-                      Expired on: <span className="font-bold">{generatedCardModalMember.expiryDate}</span>. Click Renew to issue a new unique ID and grant 2 years validity.
+                      <span className="font-sans font-black uppercase tracking-wide inline-flex items-baseline">
+                        <span className="text-[#002B66] dark:text-sky-300">EXPIRES:&nbsp;</span>
+                        <span className="text-[#E11D48]">{formatCardExpiry(generatedCardModalMember.expiryDate)}</span>
+                      </span>. Click Renew to issue a new unique ID and grant 2 years validity.
                     </p>
                   </div>
                 </div>
@@ -3636,7 +3722,7 @@ CREATE POLICY "Admin Full Access Payments"
                           {card.membershipId}
                         </span>
                         <span className="text-slate-500">
-                          Issued: {card.issueDate} • Expired: {card.expiryDate}
+                          Issued: {card.issueDate} • <span className="font-sans font-black uppercase tracking-wide inline-flex items-baseline"><span className="text-[#002B66] dark:text-sky-300">EXPIRES:&nbsp;</span><span className="text-[#E11D48]">{formatCardExpiry(card.expiryDate)}</span></span>
                         </span>
                       </div>
                       <span className="px-2 py-0.5 rounded-full bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300 font-extrabold uppercase text-[9px]">
@@ -3683,9 +3769,10 @@ CREATE POLICY "Admin Full Access Payments"
                   type="button"
                   onClick={() => downloadMemberProfilePdf(generatedCardModalMember, settings)}
                   className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-bold flex items-center gap-2 hover:bg-slate-200 cursor-pointer"
+                  title="Download Member Details (Image)"
                 >
                   <Download className="w-4 h-4" />
-                  <span>Dossier (PDF)</span>
+                  <span>Member Details (Image)</span>
                 </button>
               </div>
 
@@ -3767,7 +3854,10 @@ CREATE POLICY "Admin Full Access Payments"
                 </div>
                 <div>
                   <span className="text-[10px] text-slate-400 block uppercase">Old Expiry Date</span>
-                  <strong className="text-slate-900 dark:text-white">{renewingMember.expiryDate || 'N/A'}</strong>
+                  <span className="font-sans font-black uppercase tracking-wide inline-flex items-baseline">
+                    <span className="text-[#002B66] dark:text-sky-300">EXPIRES:&nbsp;</span>
+                    <span className="text-[#E11D48]">{formatCardExpiry(renewingMember.expiryDate)}</span>
+                  </span>
                 </div>
               </div>
             </div>

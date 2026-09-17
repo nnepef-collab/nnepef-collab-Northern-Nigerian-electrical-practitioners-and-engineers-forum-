@@ -3,6 +3,7 @@ import { RenewalRequest, Member, PaymentRecord, ForumSettings, NotificationDeliv
 import { dispatchEventNotification } from '../utils/notificationDispatcher';
 import { DualImageUpload } from './DualImageUpload';
 import { MembershipCard } from './MembershipCard';
+import { formatCardExpiry } from '../services/pdfService';
 import { NORTHERN_STATES } from '../data/initialData';
 import { handleImageError, getValidImageUrl } from '../utils/imageHelpers';
 import { 
@@ -509,7 +510,12 @@ export const SuperAdminRenewalManagement: React.FC<SuperAdminRenewalManagementPr
                 {request.status === 'Approved' && (
                   <div className="text-[10px] bg-emerald-50 dark:bg-emerald-950/40 p-2 rounded-xl text-emerald-800 dark:text-emerald-200 space-y-0.5 border border-emerald-200 dark:border-emerald-800">
                     <div>Approved: <strong>{request.approvalDate}</strong></div>
-                    <div>Valid Until: <strong>{request.expiryDate}</strong></div>
+                    <div>
+                      <span className="font-sans font-black tracking-wide uppercase inline-flex items-baseline">
+                        <span className="text-[#002B66] dark:text-sky-300">EXPIRES:&nbsp;</span>
+                        <span className="text-[#E11D48]">{formatCardExpiry(request.expiryDate)}</span>
+                      </span>
+                    </div>
                   </div>
                 )}
               </div>
@@ -776,7 +782,14 @@ export const SuperAdminRenewalManagement: React.FC<SuperAdminRenewalManagementPr
                     </div>
                     <p className="text-slate-500">Date Requested: {historyItem.requestDate}</p>
                     {historyItem.approvalDate && <p className="text-emerald-600">Approved Date: {historyItem.approvalDate}</p>}
-                    {historyItem.expiryDate && <p className="text-sky-600">Valid Expiry: {historyItem.expiryDate}</p>}
+                    {historyItem.expiryDate && (
+                      <p className="pt-0.5">
+                        <span className="font-sans font-black tracking-wide uppercase inline-flex items-baseline text-xs">
+                          <span className="text-[#002B66] dark:text-sky-300">EXPIRES:&nbsp;</span>
+                          <span className="text-[#E11D48]">{formatCardExpiry(historyItem.expiryDate)}</span>
+                        </span>
+                      </p>
+                    )}
                     <p className="text-slate-600 dark:text-slate-300 italic">{historyItem.remarks}</p>
                   </div>
                 ))}

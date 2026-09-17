@@ -9,6 +9,188 @@ export const DEFAULT_PHOTO_SVG = `data:image/svg+xml;utf8,<svg xmlns="http://www
 
 export const DEFAULT_DOCUMENT_SVG = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 24 24" fill="none" stroke="%230A2E73" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="background-color:%23F8FAFC;"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
 
+// High-speed in-memory Data URL cache to completely eliminate repeated network fetches and Supabase storage calls
+const assetDataUrlCache = new Map<string, string>();
+
+/**
+ * Safely fetches an image and converts it to a base64 Data URL with memory caching.
+ * Resolves within milliseconds when already cached.
+ */
+export async function getCachedBase64Image(
+  url: string | undefined | null,
+  fallbacks: string[] = []
+): Promise<string> {
+  const candidates = [url, ...fallbacks].filter((u): u is string => Boolean(u && typeof u === 'string' && u.trim() && u !== 'undefined' && u !== 'null'));
+  if (candidates.length === 0) return DEFAULT_AVATAR_SVG;
+
+  // 1. Check in-memory cache first
+  for (const candidate of candidates) {
+    const cleanUrl = candidate.trim();
+    if (assetDataUrlCache.has(cleanUrl)) {
+      return assetDataUrlCache.get(cleanUrl)!;
+    }
+    if (cleanUrl.startsWith('data:')) {
+      assetDataUrlCache.set(cleanUrl, cleanUrl);
+      return cleanUrl;
+    }
+  }
+
+  // 2. Fetch or load candidate safely
+  for (const candidate of candidates) {
+    const cleanUrl = candidate.trim();
+    if (cleanUrl.startsWith('data:')) {
+      assetDataUrlCache.set(cleanUrl, cleanUrl);
+      return cleanUrl;
+    }
+
+    try {
+      const fullUrl = cleanUrl.startsWith('http://') || cleanUrl.startsWith('https://')
+        ? cleanUrl
+        : (typeof window !== 'undefined' && window.location ? `${window.location.origin}${cleanUrl.startsWith('/') ? cleanUrl : '/' + cleanUrl}` : cleanUrl);
+
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timeoutId = controller ? setTimeout(() => controller.abort(), 2000) : null;
+
+      const response = await fetch(fullUrl, {
+        mode: 'cors',
+        cache: 'default', // Allow browser caching
+        signal: controller?.signal
+      });
+      if (timeoutId) clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const blob = await response.blob();
+        const base64 = await new Promise<string | null>((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.onerror = () => resolve(null);
+          reader.readAsDataURL(blob);
+        });
+
+        if (base64 && base64.startsWith('data:')) {
+          assetDataUrlCache.set(cleanUrl, base64);
+          if (url && typeof url === 'string') assetDataUrlCache.set(url.trim(), base64);
+          return base64;
+        }
+      }
+    } catch {
+      // Continue to canvas fallback
+    }
+
+    // 3. Image element with crossOrigin fallback
+    try {
+      const dataUrl = await new Promise<string | null>((resolve) => {
+        const tempImg = new Image();
+        tempImg.crossOrigin = 'anonymous';
+        let resolved = false;
+
+        const timer = setTimeout(() => {
+          if (!resolved) {
+            resolved = true;
+            resolve(null);
+          }
+        }, 1500);
+
+        tempImg.onload = () => {
+          if (resolved) return;
+          resolved = true;
+          clearTimeout(timer);
+          try {
+            const c = document.createElement('canvas');
+            c.width = tempImg.naturalWidth || 200;
+            c.height = tempImg.naturalHeight || 200;
+            const ctx = c.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(tempImg, 0, 0);
+              const result = c.toDataURL('image/png');
+              resolve(result);
+              return;
+            }
+          } catch {
+            // Tainted canvas or error
+          }
+          resolve(null);
+        };
+
+        tempImg.onerror = () => {
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timer);
+            resolve(null);
+          }
+        };
+
+        tempImg.src = cleanUrl;
+      });
+
+      if (dataUrl && dataUrl.startsWith('data:')) {
+        assetDataUrlCache.set(cleanUrl, dataUrl);
+        if (url && typeof url === 'string') assetDataUrlCache.set(url.trim(), dataUrl);
+        return dataUrl;
+      }
+    } catch {
+      // Continue
+    }
+
+    // 4. Proxy route fallback (/api/proxy-image) for CORS-restricted remote images
+    if (cleanUrl.startsWith('http://') || cleanUrl.startsWith('https://')) {
+      try {
+        const proxyUrl = `/api/proxy-image?url=${encodeURIComponent(cleanUrl)}`;
+        const res = await fetch(proxyUrl);
+        if (res.ok) {
+          const blob = await res.blob();
+          const base64 = await new Promise<string | null>((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.onerror = () => resolve(null);
+            reader.readAsDataURL(blob);
+          });
+          if (base64 && base64.startsWith('data:')) {
+            assetDataUrlCache.set(cleanUrl, base64);
+            if (url && typeof url === 'string') assetDataUrlCache.set(url.trim(), base64);
+            return base64;
+          }
+        }
+      } catch {
+        // Continue
+      }
+    }
+  }
+
+  return DEFAULT_AVATAR_SVG;
+}
+
+/**
+ * Loads an image from base64 or URL safely into an HTMLImageElement using the memory cache
+ */
+export async function loadHtmlImageFast(url: string | null | undefined, fallbacks: string[] = []): Promise<HTMLImageElement | null> {
+  const base64 = await getCachedBase64Image(url, fallbacks);
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = base64;
+  });
+}
+
+// Background eager pre-caching of application brand assets
+if (typeof window !== 'undefined') {
+  setTimeout(() => {
+    const initialAssets = [
+      '/nnepef-id-card-logo.jpg',
+      '/nnepef-id-card-logo.png',
+      '/secretary-signature.png',
+      '/secretary-signature.jpg',
+      '/logo.png',
+      '/logo.jpg'
+    ];
+    initialAssets.forEach((p) => {
+      getCachedBase64Image(p).catch(() => {});
+    });
+  }, 100);
+}
+
 /**
  * Safely handles image loading errors on <img> elements.
  * Replaces broken/empty image sources with a reliable SVG fallback.
@@ -79,12 +261,26 @@ export async function downloadFileSafely(
       const a = document.createElement('a');
       a.href = url;
       a.download = filename;
+      a.rel = 'noopener noreferrer';
       a.style.display = 'none';
       document.body.appendChild(a);
+      
+      // Dispatch synthetic mouse click for maximum mobile & webview compatibility
+      try {
+        const evt = new MouseEvent('click', {
+          bubbles: true,
+          cancelable: true,
+          view: window
+        });
+        a.dispatchEvent(evt);
+      } catch (e) {
+        // fallback to standard click
+      }
       a.click();
+      
       setTimeout(() => {
         if (document.body.contains(a)) document.body.removeChild(a);
-      }, 500);
+      }, 1000);
       return true;
     } catch (err) {
       console.error('[downloadFileSafely] Direct data URL download error:', err);

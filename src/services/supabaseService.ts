@@ -905,8 +905,9 @@ export async function saveMemberToSupabase(member: Member, options?: { isRegistr
     }
   }
 
-  // Use the admin's explicitly provided Manual Membership ID as authoritative. Never override manual input!
-  let finalMembershipId = member.membershipId ? member.membershipId.trim() : '';
+  // Use the member's or admin's explicitly provided Membership ID. Never override or replace user-entered ID!
+  const enteredId = (member.membershipId || member.existingMembershipId || member.requestedMembershipId || '').trim();
+  let finalMembershipId = enteredId ? enteredId.toUpperCase() : '';
   if (member.status === 'approved' && !finalMembershipId) {
     const stateCode = member.state ? member.state.trim().slice(0, 2).toUpperCase() : 'KN';
     finalMembershipId = `NNEPEF/${stateCode}/${Math.floor(1000 + Math.random() * 9000)}`;
@@ -1140,7 +1141,9 @@ export async function updateMemberFieldsInSupabase(memberId: string, partialFiel
         updated_at: new Date().toISOString()
       };
       if (partialFields.status !== undefined) dbPartial.status = String(partialFields.status).toLowerCase();
-      if (partialFields.membershipId !== undefined) dbPartial.membership_id = partialFields.membershipId;
+      if (partialFields.membershipId !== undefined) dbPartial.membership_id = partialFields.membershipId ? String(partialFields.membershipId).trim().toUpperCase() : null;
+      if (partialFields.gender !== undefined) dbPartial.gender = partialFields.gender;
+      if (partialFields.fullName !== undefined) dbPartial.full_name = String(partialFields.fullName).trim();
       if (partialFields.passportUrl !== undefined) {
         dbPartial.passport_url = partialFields.passportUrl;
       }

@@ -3,7 +3,7 @@ import { Member, ForumSettings } from '../types';
 import { NORTHERN_STATES, SPECIALIZATIONS } from '../data/initialData';
 import { DualImageUpload } from './DualImageUpload';
 import { generateUUID } from '../utils/uuid';
-import { downloadMemberProfilePdf, downloadApprovalSlipPdf } from '../services/pdfService';
+import { downloadRegistrationSlipImage, downloadMemberDetailsImage } from '../services/pdfService';
 import { checkMemberDuplicateInSupabase, DUPLICATE_REGISTRATION_MESSAGE } from '../services/supabaseService';
 import { normalizeNin, normalizePhone, isValidNin, isValidPhone } from '../utils/memberHelpers';
 import { 
@@ -139,7 +139,7 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
   const initialForm = {
     // 1. Personal
     fullName: '',
-    gender: 'Male' as 'Male' | 'Female' | 'Other',
+    gender: 'Male' as 'Male' | 'Female',
     dob: '',
     phone: '',
     altPhone: '',
@@ -151,6 +151,7 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
     passportUrl: '',
     // 2. Identification
     nin: '',
+    membershipId: '',
     existingMembershipId: '',
     otherIdType: 'National Identification Number (NIN)',
     otherIdNumber: '',
@@ -361,12 +362,14 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
       const refSuffix = Math.floor(100000 + Math.random() * 900000);
       const appRef = `APP-${new Date().getFullYear()}-${refSuffix}`;
 
+      const memberEnteredId = (formData.membershipId || formData.existingMembershipId || '').trim().toUpperCase();
+
       const newMember: Member = {
         id: memberId,
-        membershipId: '', // Blank until assigned manually by Admin!
-        existingMembershipId: formData.existingMembershipId?.trim() ? formData.existingMembershipId.trim().toUpperCase() : undefined,
-        requestedMembershipId: formData.existingMembershipId?.trim() ? formData.existingMembershipId.trim().toUpperCase() : undefined,
-        notes: formData.existingMembershipId?.trim() ? `[Existing Member ID: ${formData.existingMembershipId.trim().toUpperCase()}]` : undefined,
+        membershipId: memberEnteredId,
+        existingMembershipId: memberEnteredId || undefined,
+        requestedMembershipId: memberEnteredId || undefined,
+        notes: memberEnteredId ? `[Member Entered ID: ${memberEnteredId}]` : undefined,
         applicationReference: appRef,
         fullName: formData.fullName.trim(),
         gender: formData.gender,
@@ -450,17 +453,17 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
     setIsDownloadingPdf(true);
     try {
       if (selectedPdfType === 'slip') {
-        await downloadApprovalSlipPdf(submittedMember, settings);
+        await downloadRegistrationSlipImage(submittedMember, settings);
       } else if (selectedPdfType === 'biodata') {
-        await downloadMemberProfilePdf(submittedMember, settings);
+        await downloadMemberDetailsImage(submittedMember, settings);
       } else if (selectedPdfType === 'both') {
         // Download both documents in sequence
-        await downloadApprovalSlipPdf(submittedMember, settings);
+        await downloadRegistrationSlipImage(submittedMember, settings);
         await new Promise(resolve => setTimeout(resolve, 600));
-        await downloadMemberProfilePdf(submittedMember, settings);
+        await downloadMemberDetailsImage(submittedMember, settings);
       }
     } catch (e) {
-      console.error('PDF download error:', e);
+      console.error('Image download error:', e);
     } finally {
       setIsDownloadingPdf(false);
     }
@@ -544,15 +547,6 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
                   Status: PENDING ADMIN APPROVAL
                 </span>
               </div>
-              {submittedMember.existingMembershipId && (
-                <div className="mt-3 p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/50 text-xs text-amber-800 dark:text-amber-300">
-                  <span className="font-bold">Lambar ID Da Kuka Gabatar (Submitted ID): </span>
-                  <span className="font-mono font-bold text-slate-900 dark:text-white ml-1">{submittedMember.existingMembershipId}</span>
-                  <p className="text-[11px] text-amber-700 dark:text-amber-400 mt-1">
-                    ⚠️ Wannan lambar ID tana jiran amincewar Admin. Ba za ta fara aiki ba har sai Admin ya duba kuma ya tabbatar (Approved).
-                  </p>
-                </div>
-              )}
             </div>
           </div>
 
@@ -569,20 +563,20 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
             </ul>
           </div>
 
-          {/* Action: Registration PDF Download Select Box */}
+          {/* Action: Registration Download Select Box */}
           <div className="bg-slate-50 dark:bg-slate-800/90 rounded-2xl p-4 sm:p-5 border border-slate-200 dark:border-slate-700 shadow-xs space-y-4 pt-2">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
                 <label htmlFor="pdf-type-select" className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
                   <FileText className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                  <span>Zaɓi Nau'in Takardar PDF (Select Registration PDF to Download) *</span>
+                  <span>Zaɓi Takardar Rijista (Select Registration Document to Download) *</span>
                 </label>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400">
                   Zaɓi takardar da kake son saukewa (Official Slip ko Cikakken Fom din Bayanai)
                 </p>
               </div>
               <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 w-fit">
-                Official PDF Document
+                Official Document
               </span>
             </div>
 
@@ -596,10 +590,10 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
                   className="w-full px-3.5 py-3 rounded-xl border-2 border-emerald-500/50 dark:border-emerald-500/40 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs font-bold focus:ring-2 focus:ring-emerald-500 outline-none cursor-pointer shadow-xs"
                 >
                   <option value="slip">
-                    1. Official Registration Slip (Takardar Shaidar Rijista / Slip PDF)
+                    1. Official Registration Slip (Takardar Shaidar Rijista / Slip Image)
                   </option>
                   <option value="biodata">
-                    2. Full Registration Form (Cikakken Fom ɗin Bayanan Mamba / Bio-Data PDF)
+                    2. Full Registration Form (Cikakken Fom ɗin Bayanan Mamba / Bio-Data Image)
                   </option>
                   <option value="both">
                     3. Download Both Documents (Zazzage Duka Biyu - Slip & Fom)
@@ -614,7 +608,7 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
                   onClick={handleDownloadProfile}
                   disabled={isDownloadingPdf}
                   className="w-full h-full min-h-[44px] flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 disabled:opacity-75 text-white font-bold text-xs shadow-md transition-all cursor-pointer whitespace-nowrap"
-                  title="Download selected official PDF document"
+                  title="Download selected official document"
                 >
                   {isDownloadingPdf ? (
                     <Loader2 className="w-4 h-4 animate-spin text-emerald-200" />
@@ -623,12 +617,12 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
                   )}
                   <span>
                     {isDownloadingPdf
-                      ? 'Generating PDF...'
+                      ? 'Downloading...'
                       : selectedPdfType === 'slip'
-                        ? 'Download Slip (PDF)'
+                        ? 'Download Slip'
                         : selectedPdfType === 'biodata'
-                          ? 'Download Bio-Data (PDF)'
-                          : 'Download Both (PDFs)'}
+                          ? 'Download Bio-Data Form'
+                          : 'Download Both Documents'}
                   </span>
                 </button>
               </div>
@@ -791,7 +785,6 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
               >
                 <option value="Male">Male</option>
                 <option value="Female">Female</option>
-                <option value="Other">Other</option>
               </select>
             </div>
 
@@ -991,25 +984,28 @@ export const MemberRegistration: React.FC<MemberRegistrationProps> = ({
               />
             </div>
 
-            {/* Existing Membership ID Number (Optional - Idan kana da ita) */}
-            <div className="sm:col-span-2 lg:col-span-3 space-y-2 p-4 rounded-2xl border border-amber-200 dark:border-amber-900/60 bg-gradient-to-r from-amber-50/70 to-orange-50/50 dark:from-amber-950/30 dark:to-orange-950/20">
+            {/* Membership ID Number (Entered by Member) */}
+            <div className="sm:col-span-2 lg:col-span-3 space-y-2 p-4 rounded-2xl border border-sky-200 dark:border-sky-900/60 bg-gradient-to-r from-sky-50/70 to-blue-50/50 dark:from-sky-950/30 dark:to-blue-950/20">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <label className="block text-xs font-bold text-slate-800 dark:text-slate-200">
-                  Lambar Zama Mamba / Existing ID Number <span className="text-amber-700 dark:text-amber-400 font-normal text-[11px]">(Optional / Idan kana da ita)</span>
+                  Membership ID Number / Lambar Zama Mamba <span className="text-slate-500 dark:text-slate-400 font-normal text-[11px]">(Optional / Idan kana da ita ko wadda aka baka)</span>
                 </label>
-                <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800">
-                  Ba zai fara aiki ba sai Admin ya amince
+                <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-full bg-sky-100 dark:bg-sky-900/50 text-sky-800 dark:text-sky-300 border border-sky-300 dark:border-sky-800">
+                  Visible to Admin in Member Information
                 </span>
               </div>
               <input
                 type="text"
-                placeholder="Misali: NNEPEF/KN/2020/001 ko duk wata tsohuwar lambar ku (idan akwai)"
-                value={formData.existingMembershipId}
-                onChange={(e) => setFormData({ ...formData, existingMembershipId: e.target.value.toUpperCase() })}
-                className="w-full px-3.5 py-2.5 rounded-xl border border-amber-300 dark:border-amber-700/80 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs font-mono font-bold focus:ring-2 focus:ring-amber-500 outline-none uppercase shadow-xs"
+                placeholder="Misali: NNEPEF/KN/2020/001 ko duk wata lambar memba da kake da ita"
+                value={formData.membershipId || formData.existingMembershipId || ''}
+                onChange={(e) => {
+                  const val = e.target.value.toUpperCase();
+                  setFormData({ ...formData, membershipId: val, existingMembershipId: val });
+                }}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-sky-300 dark:border-sky-700/80 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs font-mono font-bold focus:ring-2 focus:ring-sky-500 outline-none uppercase shadow-xs"
               />
-              <p className="text-[11px] text-amber-800 dark:text-amber-300/90 leading-relaxed font-medium">
-                ⚠️ <strong>Muhimmiyar Sanarwa:</strong> Idan kana da tsohuwar lambar N-NEPEF Membership ID ko wata lamba da aka taba baka, zaka iya sakawa a nan. Amma <strong>ba za ta fara aiki ba har sai Admin ya duba takardunka kuma ya amince da ita (Approved)</strong>. Idan baka da ita, bar gurin a fili za a baka sabuwa da zarar an amince.
+              <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed font-medium">
+                Kuna iya shigar da lambar ku ta Membership ID da kanku a nan. Wannan lambar za ta fito ne kawai ga Admin a sashin <strong>Admin → Member Information</strong> domin dubawa, tantancewa, da kuma amincewa (Approved).
               </p>
             </div>
           </div>

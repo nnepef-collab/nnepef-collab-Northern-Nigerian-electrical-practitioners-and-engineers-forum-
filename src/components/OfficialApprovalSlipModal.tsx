@@ -3,7 +3,7 @@ import { Member, ForumSettings } from '../types';
 import { Printer, Download, X, CheckCircle2, ShieldCheck, QrCode, Building2, Calendar, Award, Loader2 } from 'lucide-react';
 import { OFFICIAL_NNEPEF_LOGO } from '../constants/logo';
 import { OFFICIAL_SECRETARY_SIGNATURE, OFFICIAL_SECRETARY_SIGNATURE_URL } from '../constants/signature';
-import { downloadApprovalSlipPdf, downloadMemberProfilePdf } from '../services/pdfService';
+import { downloadApprovalSlipImage, downloadMemberDetailsImage } from '../services/pdfService';
 
 interface OfficialApprovalSlipModalProps {
   member: Member | null;
@@ -29,16 +29,16 @@ export const OfficialApprovalSlipModal: React.FC<OfficialApprovalSlipModalProps>
     setIsDownloading(true);
     try {
       if (selectedPdfType === 'slip') {
-        await downloadApprovalSlipPdf(member, settings);
+        await downloadApprovalSlipImage(member, settings);
       } else if (selectedPdfType === 'biodata') {
-        await downloadMemberProfilePdf(member, settings);
+        await downloadMemberDetailsImage(member, settings);
       } else if (selectedPdfType === 'both') {
-        await downloadApprovalSlipPdf(member, settings);
+        await downloadApprovalSlipImage(member, settings);
         await new Promise(resolve => setTimeout(resolve, 600));
-        await downloadMemberProfilePdf(member, settings);
+        await downloadMemberDetailsImage(member, settings);
       }
     } catch (e) {
-      console.warn('Direct PDF download fallback to print:', e);
+      console.warn('Direct image download fallback to print:', e);
       window.print();
     } finally {
       setIsDownloading(false);
@@ -74,8 +74,8 @@ export const OfficialApprovalSlipModal: React.FC<OfficialApprovalSlipModalProps>
               className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-750 text-white border border-slate-700 text-xs font-bold outline-none cursor-pointer focus:ring-2 focus:ring-emerald-500 shadow-xs"
               title="Select document type to download"
             >
-              <option value="slip">Official Slip (PDF)</option>
-              <option value="biodata">Full Bio-Data Form (PDF)</option>
+              <option value="slip">Official Slip (Image)</option>
+              <option value="biodata">Full Bio-Data Form (Image)</option>
               <option value="both">Both (Slip & Bio-Data)</option>
             </select>
 
@@ -209,11 +209,6 @@ export const OfficialApprovalSlipModal: React.FC<OfficialApprovalSlipModalProps>
                 <p className="font-mono font-extrabold text-sm text-[#0A2E73] bg-sky-50 px-2 py-0.5 rounded border border-sky-200 inline-block">
                   {memberIdDisplay}
                 </p>
-                {member.status === 'pending' && (member.existingMembershipId || member.requestedMembershipId) && (
-                  <p className="text-[10px] text-amber-600 font-mono">
-                    Submitted ID: {member.existingMembershipId || member.requestedMembershipId} (Pending Approval)
-                  </p>
-                )}
               </div>
 
               <div className="space-y-0.5">
